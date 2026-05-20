@@ -27,3 +27,17 @@ aws bedrock-agent start-ingestion-job \
     --knowledge-base-id $(terraform output -raw knowledge_base_id) \
     --data-source-id $(aws bedrock-agent list-data-sources --knowledge-base-id $(terraform output -raw knowledge_base_id) --query 'dataSourceSummaries[0].dataSourceId' --output text) \
     --ingestion-job-name "initial-sync"
+
+# Test Your Pipeline
+    
+# Upload a document
+aws s3 cp sample.pdf s3://$(terraform output -raw raw_documents_bucket)/documents/sample.pdf
+
+# Query via API Gateway
+curl -X POST $(terraform output -raw api_gateway_endpoint) \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What does this document say about..."}'
+
+# View Step Functions executions
+aws stepfunctions list-executions \
+  --state-machine-arn $(terraform output -raw sfn_state_machine_arn)
