@@ -42,5 +42,5 @@ curl -X POST $(terraform output -raw api_gateway_endpoint) \
 aws stepfunctions list-executions \
   --state-machine-arn $(terraform output -raw sfn_state_machine_arn)
 
-  <img width="811" height="411" alt="AWSRAGTextaractCloudFront" src="https://github.com/user-attachments/assets/7c4e0ea8-eed8-41a0-a2fa-8b522d9989ba" />
+<img width="791" height="461" alt="AWSRAGTextaractCloudFront" src="https://github.com/user-attachments/assets/3f7c1e41-0190-4e22-a7ed-9c1671a6f35c" />
 
