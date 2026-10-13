@@ -22,7 +22,7 @@ def lambda_handler(event, context):
                 'type': 'KNOWLEDGE_BASE',
                 'knowledgeBaseConfiguration': {
                     'knowledgeBaseId': knowledge_base_id,
-                    'modelArn': f'arn:aws:bedrock:{os.environ.get("AWS_REGION", "us-east-1")}::foundation-model/{model_id}'
+                    'modelArn': model_arn()
                 }
             }
         )
@@ -32,8 +32,19 @@ def lambda_handler(event, context):
             'citations': response.get('citations', [])
         })
     
+    except json.JSONDecodeError:
+        return respond(400, {'error': 'request body must be valid JSON'})
     except Exception as e:
-        return respond(500, {'error': str(e)})
+        # Log the details to CloudWatch, but don't expose internals to API callers.
+        print(f"Query failed: {e!r}")
+        return respond(500, {'error': 'query failed'})
+
+def model_arn():
+    """Accept either a full model / inference-profile ARN or a plain foundation model ID."""
+    if model_id.startswith('arn:'):
+        return model_id
+    region = os.environ.get('AWS_REGION', 'us-east-1')
+    return f'arn:aws:bedrock:{region}::foundation-model/{model_id}'
 
 def respond(status_code, body):
     return {

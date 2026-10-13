@@ -18,9 +18,17 @@ resource "aws_lambda_function" "chunking" {
 
   environment {
     variables = {
-      SOURCE_BUCKET     = aws_s3_bucket.textract_output.id
+      OUTPUT_BUCKET       = aws_s3_bucket.textract_output.id
+      OUTPUT_PREFIX       = "processed/"
+      CHUNK_SIZE_CHARS    = tostring(var.chunk_size_chars)
+      CHUNK_OVERLAP_CHARS = tostring(var.chunk_overlap_chars)
     }
   }
+}
+
+resource "aws_cloudwatch_log_group" "chunking_logs" {
+  name              = "/aws/lambda/${aws_lambda_function.chunking.function_name}"
+  retention_in_days = 14
 }
 
 # ============================================================
@@ -34,7 +42,7 @@ resource "aws_sfn_state_machine" "ingestion_pipeline" {
   definition = templatefile("${path.module}/state_machines/ingestion_pipeline.asl.json", {
     chunking_function_arn = aws_lambda_function.chunking.arn
     knowledge_base_id     = aws_bedrockagent_knowledge_base.rag.knowledge_base_id
-    textract_output_bucket = aws_s3_bucket.textract_output.id
+    data_source_id        = aws_bedrockagent_data_source.rag_data_source.data_source_id
   })
 }
 
@@ -86,4 +94,6 @@ resource "aws_s3_bucket_notification" "raw_documents_notification" {
     events              = ["s3:ObjectCreated:*"]
     filter_prefix       = "documents/"
   }
+
+  depends_on = [aws_lambda_permission.allow_s3]
 }

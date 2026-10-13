@@ -19,7 +19,7 @@ resource "aws_lambda_function" "query_handler" {
   environment {
     variables = {
       KNOWLEDGE_BASE_ID = aws_bedrockagent_knowledge_base.rag.knowledge_base_id
-      MODEL_ID          = "amazon.titan-text-premier-v1:0"  # Can be changed to any supported model
+      MODEL_ID          = var.generation_model_id
     }
   }
 }
