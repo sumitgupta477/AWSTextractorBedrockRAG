@@ -15,16 +15,22 @@ variable "embedding_dimensions" {
   default     = 1024
 }
 
-variable "chunk_size" {
-  description = "Size of text chunks in tokens"
+variable "chunk_size_chars" {
+  description = "Target size of each text chunk, in characters (roughly 4 characters per token)"
   type        = number
-  default     = 512
+  default     = 2000
 }
 
-variable "chunk_overlap_percentage" {
-  description = "Overlap percentage between chunks"
+variable "chunk_overlap_chars" {
+  description = "Characters of overlap between consecutive chunks"
   type        = number
- default     = 20
+  default     = 200
+}
+
+variable "generation_model_id" {
+  description = "Bedrock model used to generate answers: a foundation model ID or a model / inference-profile ARN"
+  type        = string
+  default     = "amazon.titan-text-premier-v1:0"
 }
 
 variable "environment" {

@@ -1,0 +1,133 @@
+{
+  "Comment": "RAG ingestion pipeline: async Textract OCR -> chunking Lambda -> Bedrock Knowledge Base sync",
+  "StartAt": "StartTextract",
+  "States": {
+    "StartTextract": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:textract:startDocumentTextDetection",
+      "Parameters": {
+        "DocumentLocation": {
+          "S3Object": {
+            "Bucket.$": "$.bucket",
+            "Name.$": "$.key"
+          }
+        }
+      },
+      "ResultSelector": {
+        "JobId.$": "$.JobId"
+      },
+      "ResultPath": "$.textractJob",
+      "Retry": [
+        {
+          "ErrorEquals": ["Textract.ThrottlingException", "Textract.ProvisionedThroughputExceededException", "Textract.InternalServerErrorException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "WaitForTextractCompletion"
+    },
+    "WaitForTextractCompletion": {
+      "Type": "Wait",
+      "Seconds": 10,
+      "Next": "CheckTextractStatus"
+    },
+    "CheckTextractStatus": {
+      "Comment": "Only the job status is kept so large Textract responses never exceed the 256 KB state payload limit.",
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:textract:getDocumentTextDetection",
+      "Parameters": {
+        "JobId.$": "$.textractJob.JobId",
+        "MaxResults": 1
+      },
+      "ResultSelector": {
+        "JobStatus.$": "$.JobStatus"
+      },
+      "ResultPath": "$.textractStatus",
+      "Retry": [
+        {
+          "ErrorEquals": ["Textract.ThrottlingException", "Textract.ProvisionedThroughputExceededException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "IsTextractComplete"
+    },
+    "IsTextractComplete": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.textractStatus.JobStatus",
+          "StringEquals": "SUCCEEDED",
+          "Next": "Chunking"
+        },
+        {
+          "Variable": "$.textractStatus.JobStatus",
+          "StringEquals": "PARTIAL_SUCCESS",
+          "Next": "Chunking"
+        },
+        {
+          "Variable": "$.textractStatus.JobStatus",
+          "StringEquals": "FAILED",
+          "Next": "FailPipeline"
+        }
+      ],
+      "Default": "WaitForTextractCompletion"
+    },
+    "Chunking": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${chunking_function_arn}",
+        "Payload": {
+          "job_id.$": "$.textractJob.JobId",
+          "source_bucket.$": "$.bucket",
+          "source_key.$": "$.key"
+        }
+      },
+      "ResultSelector": {
+        "chunks_created.$": "$.Payload.chunks_created",
+        "output_prefix.$": "$.Payload.output_prefix"
+      },
+      "ResultPath": "$.chunkingResult",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "SyncKnowledgeBase"
+    },
+    "SyncKnowledgeBase": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagent:startIngestionJob",
+      "Parameters": {
+        "KnowledgeBaseId": "${knowledge_base_id}",
+        "DataSourceId": "${data_source_id}",
+        "Description": "Triggered by the RAG ingestion pipeline"
+      },
+      "ResultSelector": {
+        "IngestionJobId.$": "$.IngestionJob.IngestionJobId"
+      },
+      "ResultPath": "$.syncResult",
+      "Retry": [
+        {
+          "Comment": "Only one ingestion job can run per data source; wait and retry if another upload is already syncing.",
+          "ErrorEquals": ["BedrockAgent.ConflictException", "BedrockAgent.ThrottlingException"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 10,
+          "BackoffRate": 1.5
+        }
+      ],
+      "End": true
+    },
+    "FailPipeline": {
+      "Type": "Fail",
+      "Error": "TextractFailed",
+      "Cause": "Textract text detection job failed"
+    }
+  }
+}

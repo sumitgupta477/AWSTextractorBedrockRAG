@@ -1,0 +1,14 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+
+# Lambda packages built by archive_file
+*.zip
+
+# Python
+__pycache__/
+*.pyc

@@ -34,7 +34,9 @@ resource "aws_bedrockagent_knowledge_base" "rag" {
 }
 
 # ============================================================
-# Data Source for the Knowledge Base (points to S3 raw documents)
+# Data Source for the Knowledge Base
+# Points at the chunks written by the chunking Lambda (Textract output),
+# so Bedrock indexes the OCR text rather than the raw PDFs/images.
 # ============================================================
 resource "aws_bedrockagent_data_source" "rag_data_source" {
   knowledge_base_id = aws_bedrockagent_knowledge_base.rag.knowledge_base_id
@@ -44,18 +46,16 @@ resource "aws_bedrockagent_data_source" "rag_data_source" {
   data_source_configuration {
     type = "S3"
     s3_configuration {
-      bucket_arn = aws_s3_bucket.raw_documents.arn
-      inclusion_prefixes = ["documents/"]
+      bucket_arn         = aws_s3_bucket.textract_output.arn
+      inclusion_prefixes = ["processed/"]
     }
   }
 
   vector_ingestion_configuration {
     chunking_configuration {
-      chunking_strategy = "FIXED_SIZE"
-      fixed_size_chunking_configuration {
-        max_tokens = var.chunk_size
-        overlap_percentage = var.chunk_overlap_percentage
-      }
+      # Documents are already chunked by the chunking Lambda, so Bedrock
+      # embeds each file as-is.
+      chunking_strategy = "NONE"
     }
   }
 }
