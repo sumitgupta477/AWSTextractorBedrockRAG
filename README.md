@@ -27,6 +27,35 @@ An event-driven, fully serverless **Retrieval-Augmented Generation (RAG)** pipel
 - Least-privilege IAM per component, CloudWatch logging, encrypted and versioned S3 buckets
 - Infrastructure as code with Terraform
 
+## Design decisions
+
+| Decision | Why |
+|---|---|
+| **S3 Vectors** instead of OpenSearch Serverless | OpenSearch Serverless bills a minimum number of OCUs around the clock (hundreds of dollars a month even when idle). S3 Vectors charges only for storage and queries, so an idle demo costs close to nothing. |
+| **Async Textract + Step Functions polling** | The synchronous Textract API only handles single-page images. The async API handles multi-page PDFs, and Step Functions gives retries and back-off without a long-running Lambda. |
+| **Custom chunking Lambda** instead of Knowledge Base default chunking | Keeps the source document and page range on every chunk, so answers can cite exactly where they came from. |
+| **Only the job status kept in state** | Textract responses can exceed the 256 KB Step Functions payload limit; the chunking Lambda reads results directly from Textract instead. |
+
+## Cost
+
+Everything is serverless and pay-per-use, so there is no idle cost apart from small S3 storage charges. The main per-document costs are:
+
+| Component | What drives cost |
+|---|---|
+| Textract text detection | Per page processed |
+| Titan Text Embeddings v2 | Per input token embedded (one-time per chunk) |
+| Generation model | Input + output tokens per query |
+| S3 Vectors | Vector storage and query calls |
+| Lambda, Step Functions, API Gateway | Typically pennies at demo scale |
+
+Check the current [Bedrock](https://aws.amazon.com/bedrock/pricing/) and [Textract](https://aws.amazon.com/textract/pricing/) pricing pages for rates in your region. To see what a real run cost, filter Cost Explorer by the `Project` tag that every resource carries.
+
+## Observability
+
+- **Step Functions** execution history shows each stage, its duration and any retries.
+- **CloudWatch Logs** for every Lambda (`/aws/lambda/<project>-*`).
+- **Bedrock** publishes `Invocations`, `InvocationLatency` and token-count metrics in CloudWatch, useful for tracking query latency and cost per question.
+
 ## Deploy
 
 Prerequisites: an AWS account, the AWS CLI configured for `us-east-1`, and Terraform ≥ 1.5 (AWS provider ~> 6.27 for S3 Vectors support).
