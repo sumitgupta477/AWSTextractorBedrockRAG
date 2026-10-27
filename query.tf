@@ -22,8 +22,10 @@ resource "aws_lambda_function" "query_handler" {
 
   environment {
     variables = {
-      KNOWLEDGE_BASE_ID = aws_bedrockagent_knowledge_base.rag.knowledge_base_id
+      KNOWLEDGE_BASE_ID = aws_bedrockagent_knowledge_base.rag.id
       MODEL_ID          = var.generation_model_id
+      GUARDRAIL_ID      = var.enable_guardrail ? aws_bedrock_guardrail.rag[0].guardrail_id : ""
+      GUARDRAIL_VERSION = var.enable_guardrail ? aws_bedrock_guardrail_version.rag[0].version : ""
     }
   }
 }

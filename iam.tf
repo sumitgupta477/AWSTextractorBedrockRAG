@@ -127,7 +127,7 @@ resource "aws_iam_policy" "sfn_policy" {
       },
       {
         Effect = "Allow"
-        Action = ["bedrock:StartIngestionJob"]
+        Action = ["bedrock:StartIngestionJob", "bedrock:GetIngestionJob"]
         Resource = aws_bedrockagent_knowledge_base.rag.arn
       },
       {

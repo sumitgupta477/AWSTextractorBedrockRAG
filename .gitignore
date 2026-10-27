@@ -14,3 +14,5 @@ __pycache__/
 *.pyc
 eval/results.json
 authorizer.zip
+.pytest_cache/
+__pycache__/

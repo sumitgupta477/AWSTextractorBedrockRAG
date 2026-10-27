@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_eval:
+        description: "Run the answer-quality eval against the deployed API"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    name: Terraform validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper: false
+      - name: Init (no backend, no credentials needed)
+        run: terraform init -backend=false -input=false
+      - name: Validate
+        # Errors are surfaced as annotations on the PR, so they're readable without opening the log.
+        run: |
+          terraform validate -json > validate.json || true
+          jq -r '.diagnostics[] | "::\(if .severity == "error" then "error" else "warning" end) file=\(.range.filename // "main"),line=\(.range.start.line // 1)::\(.summary): \(.detail // "")"' validate.json
+          jq -e '.valid' validate.json > /dev/null
+      - name: Format check (advisory)
+        run: terraform fmt -check -recursive -diff
+        continue-on-error: true
+
+  python:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      - run: pytest -q
+
+  eval:
+    name: Answer-quality eval
+    # Manual only: it calls the live, deployed API and Bedrock (costs money).
+    if: github.event_name == 'workflow_dispatch' && inputs.run_eval
+    needs: [terraform, python]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # for OIDC role assumption
+    env:
+      RAG_API_URL: ${{ secrets.RAG_API_URL }}
+      RAG_API_KEY: ${{ secrets.RAG_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Configure AWS credentials for the LLM judge (optional)
+        if: vars.AWS_EVAL_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_EVAL_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      - name: Run eval
+        run: |
+          pip install boto3
+          JUDGE_ARGS=""
+          if [ -n "${{ vars.JUDGE_MODEL_ID }}" ] && [ -n "${{ vars.AWS_EVAL_ROLE_ARN }}" ]; then
+            JUDGE_ARGS="--judge-model ${{ vars.JUDGE_MODEL_ID }}"
+          fi
+          python eval/run_eval.py eval/questions.jsonl --out eval-results.json $JUDGE_ARGS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: eval-results.json

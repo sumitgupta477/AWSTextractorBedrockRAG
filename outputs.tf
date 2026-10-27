@@ -10,7 +10,7 @@ output "textract_output_bucket" {
 
 output "knowledge_base_id" {
   description = "Bedrock Knowledge Base ID"
-  value       = aws_bedrockagent_knowledge_base.rag.knowledge_base_id
+  value       = aws_bedrockagent_knowledge_base.rag.id
 }
 
 output "api_gateway_endpoint" {

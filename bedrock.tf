@@ -39,7 +39,7 @@ resource "aws_bedrockagent_knowledge_base" "rag" {
 # so Bedrock indexes the OCR text rather than the raw PDFs/images.
 # ============================================================
 resource "aws_bedrockagent_data_source" "rag_data_source" {
-  knowledge_base_id = aws_bedrockagent_knowledge_base.rag.knowledge_base_id
+  knowledge_base_id = aws_bedrockagent_knowledge_base.rag.id
   name              = "${var.project_name}-${var.environment}-data-source"
   data_deletion_policy = "RETAIN"
 

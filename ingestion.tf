@@ -44,7 +44,7 @@ resource "aws_sfn_state_machine" "ingestion_pipeline" {
 
   definition = templatefile("${path.module}/state_machines/ingestion_pipeline.asl.json", {
     chunking_function_arn = aws_lambda_function.chunking.arn
-    knowledge_base_id     = aws_bedrockagent_knowledge_base.rag.knowledge_base_id
+    knowledge_base_id     = aws_bedrockagent_knowledge_base.rag.id
     data_source_id        = aws_bedrockagent_data_source.rag_data_source.data_source_id
   })
 }
