@@ -154,3 +154,50 @@ def test_eval_parses_judge_output(run_eval):
     parsed = run_eval.parse_judgement('Sure: {"faithfulness": 5, "relevance": 4, "reason": "ok"}')
     assert parsed == {"faithfulness": 5, "relevance": 4, "judge_reason": "ok"}
     assert "judge_error" in run_eval.parse_judgement("no json here")
+
+
+# ---------------------------------------------------------------- feedback
+
+@pytest.fixture
+def feedback(monkeypatch):
+    return load("feedback", "lambda/feedback/main.py",
+                {"METRIC_NAMESPACE": "RAG/test", "PROJECT_NAME": "test-dev"}, monkeypatch)
+
+
+def post(module, body):
+    raw = body if isinstance(body, str) else json.dumps(body)
+    return module.lambda_handler({"body": raw}, None)
+
+
+def test_feedback_records_emf_metric(feedback, capsys):
+    resp = post(feedback, {"request_id": "abc12345-6789", "rating": "down", "comment": "wrong date"})
+    assert resp["statusCode"] == 202
+    record = json.loads(capsys.readouterr().out)
+    assert record["FeedbackNegative"] == 1 and record["FeedbackPositive"] == 0
+    assert record["_aws"]["CloudWatchMetrics"][0]["Namespace"] == "RAG/test"
+    assert record["Project"] == "test-dev" and record["request_id"] == "abc12345-6789"
+
+
+def test_feedback_truncates_long_comments(feedback, capsys):
+    post(feedback, {"request_id": "abc12345", "rating": "UP", "comment": "x" * 2000})
+    record = json.loads(capsys.readouterr().out)
+    assert record["FeedbackPositive"] == 1 and len(record["comment"]) == 500
+
+
+@pytest.mark.parametrize("body", [
+    "not json",
+    "[1, 2]",
+    {"rating": "up"},
+    {"request_id": "abc12345", "rating": "meh"},
+    {"request_id": "bad id with spaces!", "rating": "up"},
+    {"request_id": "abc12345", "rating": "up", "comment": 42},
+])
+def test_feedback_rejects_invalid_input(feedback, body):
+    assert post(feedback, body)["statusCode"] == 400
+
+
+def test_query_returns_request_id(monkeypatch):
+    query, _ = query_module(monkeypatch)
+    ctx = types.SimpleNamespace(aws_request_id="req-1234-5678")
+    resp = query.lambda_handler({"body": json.dumps({"query": "hi"})}, ctx)
+    assert json.loads(resp["body"])["request_id"] == "req-1234-5678"

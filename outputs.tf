@@ -37,3 +37,8 @@ output "alerts_topic_arn" {
   description = "SNS topic that receives alarm notifications"
   value       = aws_sns_topic.alerts.arn
 }
+
+output "feedback_endpoint" {
+  description = "Endpoint for thumbs up/down feedback on answers"
+  value       = var.enable_api_gateway ? "${aws_apigatewayv2_api.rag_api[0].api_endpoint}/${var.api_stage_name}/feedback" : "API Gateway disabled"
+}

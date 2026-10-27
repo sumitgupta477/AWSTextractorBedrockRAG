@@ -51,7 +51,9 @@ def lambda_handler(event, context):
 
         return respond(200, {
             'answer': response['output']['text'],
-            'citations': citations
+            'citations': citations,
+            # Clients send this back to POST /feedback to rate the answer.
+            'request_id': request_id
         })
     
     except json.JSONDecodeError:

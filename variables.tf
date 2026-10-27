@@ -103,3 +103,15 @@ variable "guardrail_intervention_alarm_threshold" {
   type        = number
   default     = 20
 }
+
+variable "negative_feedback_alarm_pct" {
+  description = "Alarm when more than this percentage of rated answers in a day are thumbs-down"
+  type        = number
+  default     = 30
+}
+
+variable "negative_feedback_min_ratings" {
+  description = "Minimum ratings in a day before the negative-feedback alarm can fire"
+  type        = number
+  default     = 5
+}

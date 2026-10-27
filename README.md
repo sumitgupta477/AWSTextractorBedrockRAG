@@ -26,6 +26,7 @@ An event-driven, fully serverless **Retrieval-Augmented Generation (RAG)** pipel
 - Workflow orchestration with Step Functions (polling, retries, payload-size-safe state handling)
 - Custom chunking with source/page metadata for traceable, citable answers
 - API-key authentication (Lambda authorizer) and throttling on the public endpoint
+- Live accuracy signal from user thumbs-up/down feedback, with a satisfaction metric and alarm
 - Alerting, a CloudWatch dashboard, API access logs, structured logs and X-Ray tracing
 - Automated quality evaluation: keyword recall, citation accuracy, abstention and latency
 - Bedrock Guardrails: prompt-injection and harmful-content filters, PII masking and contextual-grounding checks against hallucination
@@ -76,7 +77,17 @@ Check the current [Bedrock](https://aws.amazon.com/bedrock/pricing/) and [Textra
 | **Structured query logs** | The query Lambda logs one JSON line per question (`query_succeeded` / `query_failed`) with latency, answer size and citation counts. The question text is not logged. |
 | **Tracing** | X-Ray active tracing on all pipeline Lambdas shows where time goes in each request. |
 | **Guardrail interventions** | Alarm when the guardrail blocks or masks more than 20 requests an hour; each query log line records `guardrail_action`. |
+| **User feedback** | `POST /feedback` records thumbs up/down per answer as `FeedbackPositive` / `FeedbackNegative` metrics (Embedded Metric Format, no extra API calls). The dashboard shows a daily satisfaction %, and an alarm fires when more than 30% of a day's ratings (minimum 5) are negative. Feedback logs are kept 90 days. |
 | **Pipeline history** | Step Functions execution history shows each stage, its duration and any retries. |
+
+To see which answers users disliked alongside their latency and citation counts, run Logs Insights across both the query and feedback log groups:
+
+```
+filter event in ["query_succeeded", "feedback"]
+| stats max(latency_ms) as latency_ms, max(citations) as citations,
+        latest(rating) as rating, latest(comment) as comment by request_id
+| filter rating = "down"
+```
 
 Example CloudWatch Logs Insights query on the query Lambda's log group:
 
@@ -115,6 +126,15 @@ curl -X POST "$(terraform output -raw api_gateway_endpoint)" \
 ```
 
 Requests without a valid key get `403 Forbidden`.
+
+Each answer includes a `request_id`. Send it back to rate the answer:
+
+```bash
+curl -X POST "$(terraform output -raw feedback_endpoint)" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $(terraform output -raw api_key)" \
+  -d '{"request_id": "<request_id from /query>", "rating": "down", "comment": "Wrong date"}'
+```
 
 ## Evaluate answer quality
 
@@ -161,6 +181,7 @@ The answer-quality eval runs only on demand (Actions → CI → Run workflow →
 | `enable_guardrail` | `true` | Apply the Bedrock Guardrail to queries |
 | `guardrail_grounding_threshold` / `guardrail_relevance_threshold` | `0.7` / `0.5` | Contextual-grounding thresholds |
 | `monthly_budget_usd` | `25` | Monthly budget for the project (0 disables) |
+| `negative_feedback_alarm_pct` / `negative_feedback_min_ratings` | `30` / `5` | Thumbs-down alarm threshold and minimum daily ratings |
 | `alarm_email` | `""` | Email for alarm notifications (empty = no email) |
 | `query_latency_alarm_ms` | `15000` | p90 query latency alarm threshold |
 | `api_throttle_rate_limit` / `api_throttle_burst_limit` | `5` / `10` | Requests per second and burst allowed on the query API |

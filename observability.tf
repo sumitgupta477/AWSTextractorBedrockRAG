@@ -4,11 +4,14 @@
 
 locals {
   obs_prefix     = "${var.project_name}-${var.environment}"
-  lambda_names   = [
-    aws_lambda_function.sfn_trigger.function_name,
-    aws_lambda_function.chunking.function_name,
-    aws_lambda_function.query_handler.function_name,
-  ]
+  lambda_names = concat(
+    [
+      aws_lambda_function.sfn_trigger.function_name,
+      aws_lambda_function.chunking.function_name,
+      aws_lambda_function.query_handler.function_name,
+    ],
+    var.enable_api_gateway ? [aws_lambda_function.feedback[0].function_name] : []
+  )
 }
 
 # ------------------------------------------------------------
@@ -184,6 +187,21 @@ resource "aws_cloudwatch_dashboard" "rag" {
               [".", "4xx", ".", ".", ".", "."],
               [".", "5xx", ".", ".", ".", "."],
             ]
+          }
+        },
+        {
+          type = "metric", x = 0, y = 18, width = 24, height = 6
+          properties = {
+            title  = "User feedback (live accuracy signal)"
+            region = var.aws_region
+            period = 86400
+            stat   = "Sum"
+            metrics = [
+              [local.feedback_namespace, "FeedbackPositive", "Project", "${var.project_name}-${var.environment}", { id = "up", label = "Thumbs up" }],
+              [".", "FeedbackNegative", ".", ".", { id = "down", label = "Thumbs down" }],
+              [{ expression = "IF((up + down) > 0, 100 * up / (up + down), 0)", label = "Satisfaction %", id = "sat", yAxis = "right" }],
+            ]
+            yAxis = { right = { min = 0, max = 100 } }
           }
         },
       ] : []
