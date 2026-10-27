@@ -16,3 +16,7 @@ eval/results.json
 authorizer.zip
 .pytest_cache/
 __pycache__/
+judge.zip
+eval/judge_gold.jsonl
+eval/judge_comparison.json
+samples/

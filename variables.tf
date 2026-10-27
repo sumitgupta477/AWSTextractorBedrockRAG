@@ -103,3 +103,50 @@ variable "guardrail_intervention_alarm_threshold" {
   type        = number
   default     = 20
 }
+
+variable "enable_online_eval" {
+  description = "Sample live answers and grade them nightly with an LLM judge (stores sampled questions for online_eval_retention_days)"
+  type        = bool
+  default     = true
+}
+
+variable "online_eval_sample_rate" {
+  description = "Share of answered questions saved for LLM judging (0-1)"
+  type        = number
+  default     = 0.05
+
+  validation {
+    condition     = var.online_eval_sample_rate >= 0 && var.online_eval_sample_rate <= 1
+    error_message = "online_eval_sample_rate must be between 0 and 1."
+  }
+}
+
+variable "online_eval_retention_days" {
+  description = "Days to keep sampled questions and answers before automatic deletion"
+  type        = number
+  default     = 30
+}
+
+variable "online_eval_max_samples" {
+  description = "Maximum samples graded per nightly run (caps judge cost)"
+  type        = number
+  default     = 200
+}
+
+variable "online_eval_schedule" {
+  description = "EventBridge schedule for the nightly judge run (UTC)"
+  type        = string
+  default     = "cron(0 7 * * ? *)"
+}
+
+variable "judge_model_id" {
+  description = "Bedrock model or inference-profile ID used as the LLM judge (enable model access first)"
+  type        = string
+  default     = "amazon.nova-pro-v1:0"
+}
+
+variable "faithfulness_alarm_threshold" {
+  description = "Alarm when the day's average judged faithfulness (1-5) drops below this"
+  type        = number
+  default     = 4
+}

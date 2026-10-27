@@ -154,3 +154,190 @@ def test_eval_parses_judge_output(run_eval):
     parsed = run_eval.parse_judgement('Sure: {"faithfulness": 5, "relevance": 4, "reason": "ok"}')
     assert parsed == {"faithfulness": 5, "relevance": 4, "judge_reason": "ok"}
     assert "judge_error" in run_eval.parse_judgement("no json here")
+
+
+# ---------------------------------------------------------------- online eval
+
+class FakeAws:
+    """One fake standing in for both the S3 and Bedrock clients."""
+
+    def __init__(self, samples=None, judge_text='{"faithfulness": 5, "relevance": 4, "reason": "ok"}'):
+        self.objects = dict(samples or {})
+        self.judge_text = judge_text
+        self.converse_calls = 0
+
+    # bedrock-agent-runtime
+    def retrieve_and_generate(self, **kwargs):
+        return {"output": {"text": "The answer."},
+                "citations": [{"retrievedReferences": [{"content": {"text": "Passage A"}}]}]}
+
+    # s3
+    def put_object(self, Bucket, Key, Body, **kwargs):
+        self.objects[Key] = Body
+
+    def get_object(self, Bucket, Key):
+        body = self.objects[Key]
+        return {"Body": types.SimpleNamespace(read=lambda: body)}
+
+    def get_paginator(self, name):
+        objects = self.objects
+
+        class Paginator:
+            def paginate(self, Bucket, Prefix):
+                yield {"Contents": [{"Key": k} for k in objects if k.startswith(Prefix)]}
+        return Paginator()
+
+    # bedrock-runtime
+    def converse(self, **kwargs):
+        self.converse_calls += 1
+        return {"output": {"message": {"content": [{"text": self.judge_text}]}}}
+
+
+def test_query_saves_eval_sample_when_sampled(monkeypatch):
+    fake = FakeAws()
+    query = load("query", "lambda/query/main.py",
+                 {"KNOWLEDGE_BASE_ID": "kb1", "MODEL_ID": "m", "GUARDRAIL_ID": "",
+                  "EVAL_SAMPLE_BUCKET": "samples-bucket", "EVAL_SAMPLE_RATE": "1"}, monkeypatch, fake)
+    ctx = types.SimpleNamespace(aws_request_id="req-123")
+    assert query.lambda_handler({"body": json.dumps({"query": "What is X?"})}, ctx)["statusCode"] == 200
+    [key] = [k for k in fake.objects if k.startswith("samples/")]
+    record = json.loads(fake.objects[key])
+    assert key.endswith("/req-123.json")
+    assert record["question"] == "What is X?" and record["passages"] == ["Passage A"]
+
+
+def test_query_skips_sampling_when_rate_zero(monkeypatch):
+    fake = FakeAws()
+    query = load("query", "lambda/query/main.py",
+                 {"KNOWLEDGE_BASE_ID": "kb1", "MODEL_ID": "m", "GUARDRAIL_ID": "",
+                  "EVAL_SAMPLE_BUCKET": "samples-bucket", "EVAL_SAMPLE_RATE": "0"}, monkeypatch, fake)
+    query.lambda_handler({"body": json.dumps({"query": "q"})}, types.SimpleNamespace(aws_request_id="r"))
+    assert fake.objects == {}
+
+
+def test_sampling_failure_never_breaks_the_answer(monkeypatch):
+    fake = FakeAws()
+    fake.put_object = lambda **kw: (_ for _ in ()).throw(RuntimeError("s3 down"))
+    query = load("query", "lambda/query/main.py",
+                 {"KNOWLEDGE_BASE_ID": "kb1", "MODEL_ID": "m", "GUARDRAIL_ID": "",
+                  "EVAL_SAMPLE_BUCKET": "b", "EVAL_SAMPLE_RATE": "1"}, monkeypatch, fake)
+    resp = query.lambda_handler({"body": json.dumps({"query": "q"})}, types.SimpleNamespace(aws_request_id="r"))
+    assert resp["statusCode"] == 200
+
+
+def judge_module(monkeypatch, fake):
+    return load("judge", "lambda/judge/main.py",
+                {"EVAL_SAMPLE_BUCKET": "b", "JUDGE_MODEL_ID": "judge", "METRIC_NAMESPACE": "RAG/test",
+                 "PROJECT_NAME": "test-dev", "MAX_SAMPLES_PER_RUN": "200"}, monkeypatch, fake)
+
+
+def sample(rid):
+    return json.dumps({"request_id": rid, "question": "q", "answer": "a", "passages": ["p"]}).encode()
+
+
+def test_judge_grades_day_and_writes_report(monkeypatch, capsys):
+    fake = FakeAws(samples={"samples/2026/10/26/r1.json": sample("r1"),
+                            "samples/2026/10/26/r2.json": sample("r2"),
+                            "samples/2026/10/27/other.json": sample("x")})
+    judge = judge_module(monkeypatch, fake)
+    summary = judge.lambda_handler({"date": "2026-10-26"}, None)
+    assert summary["graded"] == 2 and summary["avg_faithfulness"] == 5 and summary["avg_relevance"] == 4
+    assert fake.converse_calls == 2
+    report = json.loads(fake.objects["reports/2026/10/26.json"])
+    assert report["summary"]["low_faithfulness"] == 0
+    emf = [json.loads(line) for line in capsys.readouterr().out.splitlines() if '"_aws"' in line]
+    assert len(emf) == 2 and emf[0]["Faithfulness"] == 5 and emf[0]["Project"] == "test-dev"
+
+
+def test_judge_counts_bad_judge_output_as_error(monkeypatch):
+    fake = FakeAws(samples={"samples/2026/10/26/r1.json": sample("r1")}, judge_text="no idea")
+    summary = judge_module(monkeypatch, fake).lambda_handler({"date": "2026-10-26"}, None)
+    assert summary["graded"] == 0 and summary["judge_errors"] == 1
+
+
+def test_judge_flags_low_faithfulness(monkeypatch):
+    fake = FakeAws(samples={"samples/2026/10/26/r1.json": sample("r1")},
+                   judge_text='{"faithfulness": 2, "relevance": 5, "reason": "made up a date"}')
+    summary = judge_module(monkeypatch, fake).lambda_handler({"date": "2026-10-26"}, None)
+    assert summary["low_faithfulness"] == 1
+    report = json.loads(fake.objects["reports/2026/10/26.json"])
+    assert report["lowest_scoring"][0]["reason"] == "made up a date"
+
+
+def test_judge_rejects_out_of_range_scores(monkeypatch):
+    judge = judge_module(monkeypatch, FakeAws())
+    with pytest.raises(ValueError):
+        judge.parse_judgement('{"faithfulness": 9, "relevance": 1}')
+
+
+# ---------------------------------------------------------------- judge comparison
+
+def load_compare():
+    spec = importlib.util.spec_from_file_location("compare_judges", ROOT / "eval/compare_judges.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ScriptedJudge:
+    """Fake bedrock-runtime client returning scripted scores per model and answer."""
+
+    def __init__(self, scores):
+        self.scores = scores  # {model: {answer: (faithfulness, relevance)}}
+
+    def converse(self, modelId, messages, **kwargs):
+        prompt = messages[0]["content"][0]["text"]
+        answer = prompt.split("ANSWER:\n", 1)[1].split("\n\nRate", 1)[0]
+        f, r = self.scores[modelId][answer]
+        return {"output": {"message": {"content": [{"text": json.dumps({"faithfulness": f, "relevance": r})}]}},
+                "usage": {"inputTokens": 1000, "outputTokens": 50}}
+
+
+def gold_rows():
+    return [
+        {"id": "1", "question": "q", "answer": "good", "passages": ["p"], "human_faithfulness": 5, "human_relevance": 5},
+        {"id": "2", "question": "q", "answer": "made-up", "passages": ["p"], "human_faithfulness": 1,
+         "human_relevance": 4, "hallucinated": True},
+        {"id": "3", "question": "q", "answer": "ok", "passages": ["p"], "human_faithfulness": 4, "human_relevance": 4},
+    ]
+
+
+def test_compare_judges_scores_and_recommends(monkeypatch):
+    for k in ("EVAL_SAMPLE_BUCKET", "JUDGE_MODEL_ID"):
+        monkeypatch.setenv(k, "unused")
+    monkeypatch.setitem(sys.modules, "boto3", types.SimpleNamespace(client=lambda *a, **k: types.SimpleNamespace()))
+    compare = load_compare()
+    judge_module = compare.load_judge_module()
+    client = ScriptedJudge({
+        "strict": {"good": (5, 5), "made-up": (1, 4), "ok": (4, 4)},   # agrees, catches the hallucination
+        "lenient": {"good": (5, 5), "made-up": (5, 4), "ok": (5, 4)},  # misses the hallucination
+    })
+    gold = gold_rows()
+    strict = compare.evaluate_model(client, judge_module, "strict", gold, repeats=2, price=(0.003, 0.015))
+    lenient = compare.evaluate_model(client, judge_module, "lenient", gold, price=(0.0001, 0.0004))
+
+    assert strict["faithfulness_within1"] == 1.0 and strict["catch_rate"] == 1.0
+    assert strict["false_alarm_rate"] == 0.0 and strict["consistency"] == 1.0
+    assert strict["cost_per_answer_usd"] == round(1000 / 1000 * 0.003 + 50 / 1000 * 0.015, 6)
+    assert lenient["catch_rate"] == 0.0
+
+    # The cheaper judge misses hallucinations, so the stricter one is recommended.
+    choice, _ = compare.recommend([strict, lenient], 0.8, 0.8)
+    assert choice == "strict"
+
+
+def test_compare_judges_gold_loading(tmp_path, capsys):
+    compare = load_compare()
+    path = tmp_path / "gold.jsonl"
+    path.write_text(json.dumps({"question": "q", "human_faithfulness": None, "human_relevance": None}) + "\n"
+                    + json.dumps(gold_rows()[0]) + "\n")
+    assert len(compare.load_gold(path)) == 1
+    assert compare.parse_prices(["m=0.001,0.002"]) == {"m": (0.001, 0.002)}
+
+
+def test_compare_judges_make_gold(tmp_path, capsys):
+    compare = load_compare()
+    (tmp_path / "a.json").write_text(json.dumps({"request_id": "r1", "question": "q", "answer": "a", "passages": ["p"]}))
+    compare.make_gold(tmp_path)
+    row = json.loads(capsys.readouterr().out)
+    assert row["id"] == "r1" and row["human_faithfulness"] is None
