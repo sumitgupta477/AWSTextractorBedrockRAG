@@ -26,6 +26,7 @@ An event-driven, fully serverless **Retrieval-Augmented Generation (RAG)** pipel
 - Workflow orchestration with Step Functions (polling, retries, payload-size-safe state handling)
 - Custom chunking with source/page metadata for traceable, citable answers
 - API-key authentication (Lambda authorizer) and throttling on the public endpoint
+- Nightly LLM-as-judge grading of a sample of real answers (online evaluation) with metrics, alarm and worst-answer reports
 - Alerting, a CloudWatch dashboard, API access logs, structured logs and X-Ray tracing
 - Automated quality evaluation: keyword recall, citation accuracy, abstention and latency
 - Bedrock Guardrails: prompt-injection and harmful-content filters, PII masking and contextual-grounding checks against hallucination
@@ -89,7 +90,7 @@ filter event = "query_succeeded"
 
 Prerequisites: an AWS account, the AWS CLI configured for `us-east-1`, and Terraform ≥ 1.5 (AWS provider ~> 6.27 for S3 Vectors support).
 
-1. In the Bedrock console, enable model access for **Titan Text Embeddings V2** and for the generation model you plan to use (default `amazon.titan-text-premier-v1:0`; override with `-var generation_model_id=...`, which also accepts an inference-profile ARN).
+1. In the Bedrock console, enable model access for **Titan Text Embeddings V2**, the judge model (**Amazon Nova Pro** by default), and the generation model you plan to use (default `amazon.titan-text-premier-v1:0`; override with `-var generation_model_id=...`, which also accepts an inference-profile ARN).
 2. Deploy:
 
    ```bash
@@ -139,6 +140,21 @@ Add `--judge-model <bedrock-model-id>` to have an LLM grade each answer 1-5 for 
 
 It exits non-zero if any case fails, so it can gate a CI pipeline.
 
+## Live answer quality (online LLM judge)
+
+The offline eval tells you how the system does on questions you wrote. To see how it does on **real** questions:
+
+1. The query Lambda saves a random **5%** of answered questions (`online_eval_sample_rate`), with the answer and the retrieved passages, to a private, encrypted `eval-samples` bucket.
+2. Every night (07:00 UTC by default) the **LLM judge** Lambda grades the previous day's samples with a Bedrock model (`judge_model_id`, default Amazon Nova Pro) on two 1-5 scales: **faithfulness** (is every claim supported by the retrieved passages?) and **relevance** (does it answer the question?). At most 200 samples per night are graded to cap cost.
+3. Scores become CloudWatch metrics (`Faithfulness`, `Relevance`, `LowFaithfulness`) on the dashboard, and an **alarm** fires if the day's average faithfulness drops below 4.
+4. A daily report at `s3://<eval-samples-bucket>/reports/YYYY/MM/DD.json` lists the 20 lowest-scoring answers with the judge's one-line reason, which is the place to start when quality drops.
+
+Grade a specific day by invoking the judge with `{"date": "2026-10-26"}`.
+
+**Privacy:** this stores real user questions. Samples are deleted automatically after `online_eval_retention_days` (default 30), the bucket blocks public access, and the guardrail has already masked PII in answers (not in questions). Set `enable_online_eval = false` to store nothing.
+
+**Cost:** roughly one judge call per sample, e.g. 1,000 queries/day at 5% is 50 judge calls/day.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every pull request:
@@ -161,6 +177,11 @@ The answer-quality eval runs only on demand (Actions → CI → Run workflow →
 | `enable_guardrail` | `true` | Apply the Bedrock Guardrail to queries |
 | `guardrail_grounding_threshold` / `guardrail_relevance_threshold` | `0.7` / `0.5` | Contextual-grounding thresholds |
 | `monthly_budget_usd` | `25` | Monthly budget for the project (0 disables) |
+| `enable_online_eval` | `true` | Sample live answers and grade them nightly with an LLM judge |
+| `online_eval_sample_rate` | `0.05` | Share of answered questions sampled (0-1) |
+| `online_eval_retention_days` | `30` | Days before sampled questions are deleted |
+| `judge_model_id` | `amazon.nova-pro-v1:0` | Bedrock model used as the judge (enable access first) |
+| `faithfulness_alarm_threshold` | `4` | Alarm when daily average faithfulness drops below this |
 | `alarm_email` | `""` | Email for alarm notifications (empty = no email) |
 | `query_latency_alarm_ms` | `15000` | p90 query latency alarm threshold |
 | `api_throttle_rate_limit` / `api_throttle_burst_limit` | `5` / `10` | Requests per second and burst allowed on the query API |

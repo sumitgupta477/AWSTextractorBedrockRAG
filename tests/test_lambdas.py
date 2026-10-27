@@ -154,3 +154,117 @@ def test_eval_parses_judge_output(run_eval):
     parsed = run_eval.parse_judgement('Sure: {"faithfulness": 5, "relevance": 4, "reason": "ok"}')
     assert parsed == {"faithfulness": 5, "relevance": 4, "judge_reason": "ok"}
     assert "judge_error" in run_eval.parse_judgement("no json here")
+
+
+# ---------------------------------------------------------------- online eval
+
+class FakeAws:
+    """One fake standing in for both the S3 and Bedrock clients."""
+
+    def __init__(self, samples=None, judge_text='{"faithfulness": 5, "relevance": 4, "reason": "ok"}'):
+        self.objects = dict(samples or {})
+        self.judge_text = judge_text
+        self.converse_calls = 0
+
+    # bedrock-agent-runtime
+    def retrieve_and_generate(self, **kwargs):
+        return {"output": {"text": "The answer."},
+                "citations": [{"retrievedReferences": [{"content": {"text": "Passage A"}}]}]}
+
+    # s3
+    def put_object(self, Bucket, Key, Body, **kwargs):
+        self.objects[Key] = Body
+
+    def get_object(self, Bucket, Key):
+        body = self.objects[Key]
+        return {"Body": types.SimpleNamespace(read=lambda: body)}
+
+    def get_paginator(self, name):
+        objects = self.objects
+
+        class Paginator:
+            def paginate(self, Bucket, Prefix):
+                yield {"Contents": [{"Key": k} for k in objects if k.startswith(Prefix)]}
+        return Paginator()
+
+    # bedrock-runtime
+    def converse(self, **kwargs):
+        self.converse_calls += 1
+        return {"output": {"message": {"content": [{"text": self.judge_text}]}}}
+
+
+def test_query_saves_eval_sample_when_sampled(monkeypatch):
+    fake = FakeAws()
+    query = load("query", "lambda/query/main.py",
+                 {"KNOWLEDGE_BASE_ID": "kb1", "MODEL_ID": "m", "GUARDRAIL_ID": "",
+                  "EVAL_SAMPLE_BUCKET": "samples-bucket", "EVAL_SAMPLE_RATE": "1"}, monkeypatch, fake)
+    ctx = types.SimpleNamespace(aws_request_id="req-123")
+    assert query.lambda_handler({"body": json.dumps({"query": "What is X?"})}, ctx)["statusCode"] == 200
+    [key] = [k for k in fake.objects if k.startswith("samples/")]
+    record = json.loads(fake.objects[key])
+    assert key.endswith("/req-123.json")
+    assert record["question"] == "What is X?" and record["passages"] == ["Passage A"]
+
+
+def test_query_skips_sampling_when_rate_zero(monkeypatch):
+    fake = FakeAws()
+    query = load("query", "lambda/query/main.py",
+                 {"KNOWLEDGE_BASE_ID": "kb1", "MODEL_ID": "m", "GUARDRAIL_ID": "",
+                  "EVAL_SAMPLE_BUCKET": "samples-bucket", "EVAL_SAMPLE_RATE": "0"}, monkeypatch, fake)
+    query.lambda_handler({"body": json.dumps({"query": "q"})}, types.SimpleNamespace(aws_request_id="r"))
+    assert fake.objects == {}
+
+
+def test_sampling_failure_never_breaks_the_answer(monkeypatch):
+    fake = FakeAws()
+    fake.put_object = lambda **kw: (_ for _ in ()).throw(RuntimeError("s3 down"))
+    query = load("query", "lambda/query/main.py",
+                 {"KNOWLEDGE_BASE_ID": "kb1", "MODEL_ID": "m", "GUARDRAIL_ID": "",
+                  "EVAL_SAMPLE_BUCKET": "b", "EVAL_SAMPLE_RATE": "1"}, monkeypatch, fake)
+    resp = query.lambda_handler({"body": json.dumps({"query": "q"})}, types.SimpleNamespace(aws_request_id="r"))
+    assert resp["statusCode"] == 200
+
+
+def judge_module(monkeypatch, fake):
+    return load("judge", "lambda/judge/main.py",
+                {"EVAL_SAMPLE_BUCKET": "b", "JUDGE_MODEL_ID": "judge", "METRIC_NAMESPACE": "RAG/test",
+                 "PROJECT_NAME": "test-dev", "MAX_SAMPLES_PER_RUN": "200"}, monkeypatch, fake)
+
+
+def sample(rid):
+    return json.dumps({"request_id": rid, "question": "q", "answer": "a", "passages": ["p"]}).encode()
+
+
+def test_judge_grades_day_and_writes_report(monkeypatch, capsys):
+    fake = FakeAws(samples={"samples/2026/10/26/r1.json": sample("r1"),
+                            "samples/2026/10/26/r2.json": sample("r2"),
+                            "samples/2026/10/27/other.json": sample("x")})
+    judge = judge_module(monkeypatch, fake)
+    summary = judge.lambda_handler({"date": "2026-10-26"}, None)
+    assert summary["graded"] == 2 and summary["avg_faithfulness"] == 5 and summary["avg_relevance"] == 4
+    assert fake.converse_calls == 2
+    report = json.loads(fake.objects["reports/2026/10/26.json"])
+    assert report["summary"]["low_faithfulness"] == 0
+    emf = [json.loads(line) for line in capsys.readouterr().out.splitlines() if '"_aws"' in line]
+    assert len(emf) == 2 and emf[0]["Faithfulness"] == 5 and emf[0]["Project"] == "test-dev"
+
+
+def test_judge_counts_bad_judge_output_as_error(monkeypatch):
+    fake = FakeAws(samples={"samples/2026/10/26/r1.json": sample("r1")}, judge_text="no idea")
+    summary = judge_module(monkeypatch, fake).lambda_handler({"date": "2026-10-26"}, None)
+    assert summary["graded"] == 0 and summary["judge_errors"] == 1
+
+
+def test_judge_flags_low_faithfulness(monkeypatch):
+    fake = FakeAws(samples={"samples/2026/10/26/r1.json": sample("r1")},
+                   judge_text='{"faithfulness": 2, "relevance": 5, "reason": "made up a date"}')
+    summary = judge_module(monkeypatch, fake).lambda_handler({"date": "2026-10-26"}, None)
+    assert summary["low_faithfulness"] == 1
+    report = json.loads(fake.objects["reports/2026/10/26.json"])
+    assert report["lowest_scoring"][0]["reason"] == "made up a date"
+
+
+def test_judge_rejects_out_of_range_scores(monkeypatch):
+    judge = judge_module(monkeypatch, FakeAws())
+    with pytest.raises(ValueError):
+        judge.parse_judgement('{"faithfulness": 9, "relevance": 1}')
