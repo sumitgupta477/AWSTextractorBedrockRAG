@@ -268,3 +268,76 @@ def test_judge_rejects_out_of_range_scores(monkeypatch):
     judge = judge_module(monkeypatch, FakeAws())
     with pytest.raises(ValueError):
         judge.parse_judgement('{"faithfulness": 9, "relevance": 1}')
+
+
+# ---------------------------------------------------------------- judge comparison
+
+def load_compare():
+    spec = importlib.util.spec_from_file_location("compare_judges", ROOT / "eval/compare_judges.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ScriptedJudge:
+    """Fake bedrock-runtime client returning scripted scores per model and answer."""
+
+    def __init__(self, scores):
+        self.scores = scores  # {model: {answer: (faithfulness, relevance)}}
+
+    def converse(self, modelId, messages, **kwargs):
+        prompt = messages[0]["content"][0]["text"]
+        answer = prompt.split("ANSWER:\n", 1)[1].split("\n\nRate", 1)[0]
+        f, r = self.scores[modelId][answer]
+        return {"output": {"message": {"content": [{"text": json.dumps({"faithfulness": f, "relevance": r})}]}},
+                "usage": {"inputTokens": 1000, "outputTokens": 50}}
+
+
+def gold_rows():
+    return [
+        {"id": "1", "question": "q", "answer": "good", "passages": ["p"], "human_faithfulness": 5, "human_relevance": 5},
+        {"id": "2", "question": "q", "answer": "made-up", "passages": ["p"], "human_faithfulness": 1,
+         "human_relevance": 4, "hallucinated": True},
+        {"id": "3", "question": "q", "answer": "ok", "passages": ["p"], "human_faithfulness": 4, "human_relevance": 4},
+    ]
+
+
+def test_compare_judges_scores_and_recommends(monkeypatch):
+    for k in ("EVAL_SAMPLE_BUCKET", "JUDGE_MODEL_ID"):
+        monkeypatch.setenv(k, "unused")
+    monkeypatch.setitem(sys.modules, "boto3", types.SimpleNamespace(client=lambda *a, **k: types.SimpleNamespace()))
+    compare = load_compare()
+    judge_module = compare.load_judge_module()
+    client = ScriptedJudge({
+        "strict": {"good": (5, 5), "made-up": (1, 4), "ok": (4, 4)},   # agrees, catches the hallucination
+        "lenient": {"good": (5, 5), "made-up": (5, 4), "ok": (5, 4)},  # misses the hallucination
+    })
+    gold = gold_rows()
+    strict = compare.evaluate_model(client, judge_module, "strict", gold, repeats=2, price=(0.003, 0.015))
+    lenient = compare.evaluate_model(client, judge_module, "lenient", gold, price=(0.0001, 0.0004))
+
+    assert strict["faithfulness_within1"] == 1.0 and strict["catch_rate"] == 1.0
+    assert strict["false_alarm_rate"] == 0.0 and strict["consistency"] == 1.0
+    assert strict["cost_per_answer_usd"] == round(1000 / 1000 * 0.003 + 50 / 1000 * 0.015, 6)
+    assert lenient["catch_rate"] == 0.0
+
+    # The cheaper judge misses hallucinations, so the stricter one is recommended.
+    choice, _ = compare.recommend([strict, lenient], 0.8, 0.8)
+    assert choice == "strict"
+
+
+def test_compare_judges_gold_loading(tmp_path, capsys):
+    compare = load_compare()
+    path = tmp_path / "gold.jsonl"
+    path.write_text(json.dumps({"question": "q", "human_faithfulness": None, "human_relevance": None}) + "\n"
+                    + json.dumps(gold_rows()[0]) + "\n")
+    assert len(compare.load_gold(path)) == 1
+    assert compare.parse_prices(["m=0.001,0.002"]) == {"m": (0.001, 0.002)}
+
+
+def test_compare_judges_make_gold(tmp_path, capsys):
+    compare = load_compare()
+    (tmp_path / "a.json").write_text(json.dumps({"request_id": "r1", "question": "q", "answer": "a", "passages": ["p"]}))
+    compare.make_gold(tmp_path)
+    row = json.loads(capsys.readouterr().out)
+    assert row["id"] == "r1" and row["human_faithfulness"] is None

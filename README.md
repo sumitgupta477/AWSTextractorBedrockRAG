@@ -151,6 +151,36 @@ The offline eval tells you how the system does on questions you wrote. To see ho
 
 Grade a specific day by invoking the judge with `{"date": "2026-10-26"}`.
 
+### Choosing the judge model
+
+A judge is only useful if it agrees with you. `eval/compare_judges.py` runs candidate models over answers **you graded by hand** and reports, for each:
+
+| Metric | Meaning | Aim for |
+|---|---|---|
+| Agreement ±1 | Share of faithfulness scores within 1 point of yours | ≥ 80% |
+| Catch rate | Of answers you marked bad (hallucinated, or faithfulness ≤ 2), how many it flagged | ≥ 80% |
+| False alarms | Of answers you rated good (≥ 4), how many it wrongly flagged | low |
+| Consistency | Same scores across repeated runs (`--repeats 2`) | ~100% |
+| $/answer | Cost per graded answer (with `--price`) | lowest that passes |
+
+It uses the nightly judge's exact prompt, so results carry over to production, and recommends the cheapest model that passes.
+
+```bash
+# 1. Turn some nightly samples into a gold file, then grade it by hand (30-50 rows, include some bad answers)
+aws s3 sync s3://$(terraform output -raw eval_samples_bucket)/samples/2026/10/26/ ./samples
+python eval/compare_judges.py --make-gold ./samples > eval/judge_gold.jsonl
+
+# 2. Compare candidates (prices = USD per 1K input,output tokens from the Bedrock pricing page)
+python eval/compare_judges.py eval/judge_gold.jsonl \
+    --models us.anthropic.claude-sonnet-4-5-20250929-v1:0,amazon.nova-pro-v1:0,amazon.nova-lite-v1:0 \
+    --price amazon.nova-lite-v1:0=0.00006,0.00024 --repeats 2
+
+# 3. Deploy the winner
+terraform apply -var judge_model_id=<recommended model>
+```
+
+`eval/judge_gold.example.jsonl` shows the format. Rerun the comparison when you change the answer model, add new kinds of documents, or a new judge version comes out. Prefer a judge from a different model family than your answer model, since judges tend to rate their own family's answers more generously.
+
 **Privacy:** this stores real user questions. Samples are deleted automatically after `online_eval_retention_days` (default 30), the bucket blocks public access, and the guardrail has already masked PII in answers (not in questions). Set `enable_online_eval = false` to store nothing.
 
 **Cost:** roughly one judge call per sample, e.g. 1,000 queries/day at 5% is 50 judge calls/day.
