@@ -1,5 +1,5 @@
 {
-  "Comment": "RAG ingestion pipeline: async Textract OCR -> chunking Lambda -> Bedrock Knowledge Base sync",
+  "Comment": "RAG ingestion pipeline: async Textract OCR -> chunking Lambda -> Bedrock Knowledge Base sync -> wait until indexed",
   "StartAt": "StartTextract",
   "States": {
     "StartTextract": {
@@ -122,7 +122,63 @@
           "BackoffRate": 1.5
         }
       ],
-      "End": true
+      "Next": "WaitForIndexing"
+    },
+    "WaitForIndexing": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Next": "CheckIndexingStatus"
+    },
+    "CheckIndexingStatus": {
+      "Comment": "Poll the ingestion job so the execution only succeeds once the document is actually searchable.",
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagent:getIngestionJob",
+      "Parameters": {
+        "KnowledgeBaseId": "${knowledge_base_id}",
+        "DataSourceId": "${data_source_id}",
+        "IngestionJobId.$": "$.syncResult.IngestionJobId"
+      },
+      "ResultSelector": {
+        "IngestionJobId.$": "$.IngestionJob.IngestionJobId",
+        "Status.$": "$.IngestionJob.Status",
+        "Statistics.$": "$.IngestionJob.Statistics"
+      },
+      "ResultPath": "$.syncResult",
+      "Retry": [
+        {
+          "ErrorEquals": ["BedrockAgent.ThrottlingException", "BedrockAgent.InternalServerException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "IsIndexingComplete"
+    },
+    "IsIndexingComplete": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.syncResult.Status",
+          "StringEquals": "COMPLETE",
+          "Next": "IngestionSucceeded"
+        },
+        {
+          "Or": [
+            { "Variable": "$.syncResult.Status", "StringEquals": "FAILED" },
+            { "Variable": "$.syncResult.Status", "StringEquals": "STOPPED" }
+          ],
+          "Next": "FailIndexing"
+        }
+      ],
+      "Default": "WaitForIndexing"
+    },
+    "IngestionSucceeded": {
+      "Type": "Succeed"
+    },
+    "FailIndexing": {
+      "Type": "Fail",
+      "Error": "KnowledgeBaseIngestionFailed",
+      "Cause": "Bedrock Knowledge Base ingestion job failed or was stopped; check the job's failure reasons in the Bedrock console"
     },
     "FailPipeline": {
       "Type": "Fail",

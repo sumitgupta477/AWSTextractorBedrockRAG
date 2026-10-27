@@ -73,3 +73,33 @@ variable "query_latency_alarm_ms" {
   type        = number
   default     = 15000
 }
+
+variable "enable_guardrail" {
+  description = "Apply a Bedrock Guardrail (prompt-attack, harmful content, PII masking, grounding checks) to every query"
+  type        = bool
+  default     = true
+}
+
+variable "guardrail_grounding_threshold" {
+  description = "Block answers whose grounding score in the retrieved documents is below this (0-0.99)"
+  type        = number
+  default     = 0.7
+}
+
+variable "guardrail_relevance_threshold" {
+  description = "Block answers whose relevance to the question is below this (0-0.99)"
+  type        = number
+  default     = 0.5
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly AWS Budget for this project in USD; alerts at 80% actual and 100% forecast (0 disables)"
+  type        = number
+  default     = 25
+}
+
+variable "guardrail_intervention_alarm_threshold" {
+  description = "Alarm when the guardrail intervenes on more than this many requests in an hour"
+  type        = number
+  default     = 20
+}

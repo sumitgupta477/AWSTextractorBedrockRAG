@@ -13,10 +13,11 @@ An event-driven, fully serverless **Retrieval-Augmented Generation (RAG)** pipel
 3. Step Functions starts an **async Textract** text-detection job and polls until it finishes (with retries and back-off on throttling).
 4. The **chunking Lambda** reads every page of the Textract result, splits the text into overlapping chunks on paragraph/sentence boundaries, and writes each chunk to S3 with a `.metadata.json` file recording the source document and page range.
 5. Step Functions starts a **Bedrock Knowledge Base ingestion job**, which embeds the chunks with **Amazon Titan Text Embeddings v2** and stores the vectors in **Amazon S3 Vectors**.
+6. Step Functions polls the ingestion job and only reports success once the document is actually searchable (or fails the execution, triggering an alert).
 
 **Query**
 
-`POST /query` on API Gateway (API-key protected and rate-limited) → `query` Lambda → Bedrock **RetrieveAndGenerate**, which retrieves the most relevant chunks and generates an answer with citations.
+`POST /query` on API Gateway (API-key protected and rate-limited) → `query` Lambda → Bedrock **RetrieveAndGenerate**, which retrieves the most relevant chunks and generates an answer with citations. A **Bedrock Guardrail** screens every question and answer.
 
 ## What this demonstrates
 
@@ -27,6 +28,9 @@ An event-driven, fully serverless **Retrieval-Augmented Generation (RAG)** pipel
 - API-key authentication (Lambda authorizer) and throttling on the public endpoint
 - Alerting, a CloudWatch dashboard, API access logs, structured logs and X-Ray tracing
 - Automated quality evaluation: keyword recall, citation accuracy, abstention and latency
+- Bedrock Guardrails: prompt-injection and harmful-content filters, PII masking and contextual-grounding checks against hallucination
+- FinOps: a project-scoped AWS Budget with actual and forecast alerts
+- CI: Terraform validation and unit tests on every pull request, plus an on-demand answer-quality eval
 - Least-privilege IAM per component, CloudWatch logging, encrypted and versioned S3 buckets
 - Infrastructure as code with Terraform
 
@@ -38,6 +42,8 @@ An event-driven, fully serverless **Retrieval-Augmented Generation (RAG)** pipel
 | **Async Textract + Step Functions polling** | The synchronous Textract API only handles single-page images. The async API handles multi-page PDFs, and Step Functions gives retries and back-off without a long-running Lambda. |
 | **Custom chunking Lambda** instead of Knowledge Base default chunking | Keeps the source document and page range on every chunk, so answers can cite exactly where they came from. |
 | **Lambda authorizer + throttling** on the query API | HTTP APIs have no built-in API keys. A tiny authorizer checks an `x-api-key` header (results cached 5 minutes), and stage throttling caps requests per second, so a leaked URL can't run up the Bedrock bill. |
+| **Bedrock Guardrails on every query** | Blocks prompt-injection attempts and harmful content, masks personal data in answers, and rejects answers that aren't grounded in the retrieved passages, a direct guard against hallucination. |
+| **Wait for indexing before reporting success** | Starting an ingestion job only queues it. Polling until `COMPLETE` means a successful execution really means "searchable", and indexing failures raise an alarm. |
 | **Only the job status kept in state** | Textract responses can exceed the 256 KB Step Functions payload limit; the chunking Lambda reads results directly from Textract instead. |
 
 ## Cost
@@ -54,6 +60,12 @@ Everything is serverless and pay-per-use, so there is no idle cost apart from sm
 
 Check the current [Bedrock](https://aws.amazon.com/bedrock/pricing/) and [Textract](https://aws.amazon.com/textract/pricing/) pricing pages for rates in your region. To see what a real run cost, filter Cost Explorer by the `Project` tag that every resource carries.
 
+## Cost controls
+
+- **Budget**: `aws_budgets_budget` tracks monthly spend on resources tagged with this project (default $25) and alerts the SNS topic at 80% of actual spend and when the forecast exceeds 100%. Activate `Project` as a cost allocation tag once in the Billing console so the filter works (it can take up to 24 hours). Set `-var monthly_budget_usd=0` to disable.
+- **Throttling** on the API caps how fast Bedrock can be called.
+- **Token usage** appears on the dashboard. RetrieveAndGenerate doesn't return per-request token counts, so for exact cost per query enable Bedrock model invocation logging.
+
 ## Observability
 
 | What | Where |
@@ -63,6 +75,7 @@ Check the current [Bedrock](https://aws.amazon.com/bedrock/pricing/) and [Textra
 | **API access logs** | `/aws/apigateway/<project>-<env>-rag-api`: one JSON line per request with status, latency and authorizer result. |
 | **Structured query logs** | The query Lambda logs one JSON line per question (`query_succeeded` / `query_failed`) with latency, answer size and citation counts. The question text is not logged. |
 | **Tracing** | X-Ray active tracing on all pipeline Lambdas shows where time goes in each request. |
+| **Guardrail interventions** | Alarm when the guardrail blocks or masks more than 20 requests an hour; each query log line records `guardrail_action`. |
 | **Pipeline history** | Step Functions execution history shows each stage, its duration and any retries. |
 
 Example CloudWatch Logs Insights query on the query Lambda's log group:
@@ -122,7 +135,18 @@ export RAG_API_KEY=$(terraform output -raw api_key)
 python eval/run_eval.py eval/questions.jsonl --out eval/results.json
 ```
 
-It exits non-zero if any case fails, so it can gate a CI pipeline. Re-run it after changing the chunk size, embedding settings or generation model to compare results.
+Add `--judge-model <bedrock-model-id>` to have an LLM grade each answer 1-5 for **faithfulness** (is every claim supported by the retrieved passages?) and **relevance** (does it answer the question?). Answers below `--min-faithfulness` (default 4) fail. This needs `boto3` and credentials allowed to call the judge model.
+
+It exits non-zero if any case fails, so it can gate a CI pipeline.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every pull request:
+
+- `terraform init -backend=false` + `terraform validate` (plus an advisory `fmt` check)
+- `pytest`: offline unit tests for chunking, the authorizer, the query Lambda and the eval scoring
+
+The answer-quality eval runs only on demand (Actions → CI → Run workflow → `run_eval`), because it calls the live API. Configure repository secrets `RAG_API_URL` and `RAG_API_KEY`; for LLM-judge scores also set the variables `AWS_EVAL_ROLE_ARN` (an IAM role trusted for GitHub OIDC) and `JUDGE_MODEL_ID`. Re-run it after changing the chunk size, embedding settings or generation model to compare results.
 
 ## Configuration
 
@@ -134,6 +158,9 @@ It exits non-zero if any case fails, so it can gate a CI pipeline. Re-run it aft
 | `generation_model_id` | `amazon.titan-text-premier-v1:0` | Model that writes the answers |
 | `chunk_size_chars` / `chunk_overlap_chars` | `2000` / `200` | Chunking behaviour |
 | `embedding_dimensions` | `1024` | Titan v2 embedding size |
+| `enable_guardrail` | `true` | Apply the Bedrock Guardrail to queries |
+| `guardrail_grounding_threshold` / `guardrail_relevance_threshold` | `0.7` / `0.5` | Contextual-grounding thresholds |
+| `monthly_budget_usd` | `25` | Monthly budget for the project (0 disables) |
 | `alarm_email` | `""` | Email for alarm notifications (empty = no email) |
 | `query_latency_alarm_ms` | `15000` | p90 query latency alarm threshold |
 | `api_throttle_rate_limit` / `api_throttle_burst_limit` | `5` / `10` | Requests per second and burst allowed on the query API |

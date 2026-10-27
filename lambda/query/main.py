@@ -6,6 +6,8 @@ import os
 bedrock = boto3.client('bedrock-agent-runtime')
 knowledge_base_id = os.environ['KNOWLEDGE_BASE_ID']
 model_id = os.environ['MODEL_ID']
+guardrail_id = os.environ.get('GUARDRAIL_ID', '')
+guardrail_version = os.environ.get('GUARDRAIL_VERSION', '')
 
 def lambda_handler(event, context):
     started = time.perf_counter()
@@ -19,14 +21,23 @@ def lambda_handler(event, context):
             return respond(400, {'error': 'query parameter required'})
         
         # Call Bedrock RetrieveAndGenerate API
+        kb_config = {
+            'knowledgeBaseId': knowledge_base_id,
+            'modelArn': model_arn()
+        }
+        if guardrail_id:
+            kb_config['generationConfiguration'] = {
+                'guardrailConfiguration': {
+                    'guardrailId': guardrail_id,
+                    'guardrailVersion': guardrail_version
+                }
+            }
+
         response = bedrock.retrieve_and_generate(
             input={'text': user_query},
             retrieveAndGenerateConfiguration={
                 'type': 'KNOWLEDGE_BASE',
-                'knowledgeBaseConfiguration': {
-                    'knowledgeBaseId': knowledge_base_id,
-                    'modelArn': model_arn()
-                }
+                'knowledgeBaseConfiguration': kb_config
             }
         )
         
@@ -35,6 +46,7 @@ def lambda_handler(event, context):
                   query_chars=len(user_query),
                   answer_chars=len(response['output']['text']),
                   citations=len(citations),
+                  guardrail_action=response.get('guardrailAction', 'NONE'),
                   references=sum(len(c.get('retrievedReferences', [])) for c in citations))
 
         return respond(200, {
