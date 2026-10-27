@@ -50,3 +50,14 @@ variable "enable_api_gateway" {
   type        = bool
   default     = true
 }
+variable "api_throttle_rate_limit" {
+  description = "Steady-state requests per second allowed on the query API (caps Bedrock spend)"
+  type        = number
+  default     = 5
+}
+
+variable "api_throttle_burst_limit" {
+  description = "Maximum burst of concurrent requests allowed on the query API"
+  type        = number
+  default     = 10
+}

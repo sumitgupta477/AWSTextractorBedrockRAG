@@ -22,3 +22,8 @@ output "sfn_state_machine_arn" {
   description = "Step Functions state machine ARN"
   value       = aws_sfn_state_machine.ingestion_pipeline.arn
 }
+output "api_key" {
+  description = "API key for the query endpoint; send it in the x-api-key header (read with: terraform output -raw api_key)"
+  value       = random_password.api_key.result
+  sensitive   = true
+}

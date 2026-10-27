@@ -12,3 +12,5 @@ crash.log
 # Python
 __pycache__/
 *.pyc
+eval/results.json
+authorizer.zip

@@ -49,7 +49,7 @@ resource "aws_apigatewayv2_api" "rag_api" {
   cors_configuration {
     allow_origins = ["*"]
     allow_methods = ["POST"]
-    allow_headers = ["content-type"]
+    allow_headers = ["content-type", "x-api-key"]
     max_age       = 300
   }
 }
@@ -68,6 +68,10 @@ resource "aws_apigatewayv2_route" "query_route" {
   api_id    = aws_apigatewayv2_api.rag_api[0].id
   route_key = "POST /query"
   target    = "integrations/${aws_apigatewayv2_integration.query_integration[0].id}"
+
+  # Every request must carry a valid x-api-key header (checked by the authorizer Lambda).
+  authorization_type = "CUSTOM"
+  authorizer_id      = aws_apigatewayv2_authorizer.api_key[0].id
 }
 
 resource "aws_apigatewayv2_stage" "api_stage" {
@@ -75,4 +79,10 @@ resource "aws_apigatewayv2_stage" "api_stage" {
   api_id      = aws_apigatewayv2_api.rag_api[0].id
   name        = var.api_stage_name
   auto_deploy = true
+
+  # Rate-limit the endpoint so a leaked key or a runaway client can't run up the Bedrock bill.
+  default_route_settings {
+    throttling_rate_limit  = var.api_throttle_rate_limit
+    throttling_burst_limit = var.api_throttle_burst_limit
+  }
 }
