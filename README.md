@@ -25,6 +25,7 @@ An event-driven, fully serverless **Retrieval-Augmented Generation (RAG)** pipel
 - Workflow orchestration with Step Functions (polling, retries, payload-size-safe state handling)
 - Custom chunking with source/page metadata for traceable, citable answers
 - API-key authentication (Lambda authorizer) and throttling on the public endpoint
+- Alerting, a CloudWatch dashboard, API access logs, structured logs and X-Ray tracing
 - Automated quality evaluation: keyword recall, citation accuracy, abstention and latency
 - Least-privilege IAM per component, CloudWatch logging, encrypted and versioned S3 buckets
 - Infrastructure as code with Terraform
@@ -55,9 +56,21 @@ Check the current [Bedrock](https://aws.amazon.com/bedrock/pricing/) and [Textra
 
 ## Observability
 
-- **Step Functions** execution history shows each stage, its duration and any retries.
-- **CloudWatch Logs** for every Lambda (`/aws/lambda/<project>-*`).
-- **Bedrock** publishes `Invocations`, `InvocationLatency` and token-count metrics in CloudWatch, useful for tracking query latency and cost per question.
+| What | Where |
+|---|---|
+| **Alerts** | SNS topic `<project>-<env>-alerts`. Alarms fire on failed ingestions, any Lambda error, API 5xx responses and high p90 query latency. Set `-var alarm_email=you@example.com` to get them by email (confirm the subscription email AWS sends). |
+| **Dashboard** | One CloudWatch dashboard with ingestion runs, query latency (p50/p90/max), Lambda errors, Bedrock token usage and API request/4xx/5xx counts. Open it with `terraform output -raw dashboard_url`. |
+| **API access logs** | `/aws/apigateway/<project>-<env>-rag-api`: one JSON line per request with status, latency and authorizer result. |
+| **Structured query logs** | The query Lambda logs one JSON line per question (`query_succeeded` / `query_failed`) with latency, answer size and citation counts. The question text is not logged. |
+| **Tracing** | X-Ray active tracing on all pipeline Lambdas shows where time goes in each request. |
+| **Pipeline history** | Step Functions execution history shows each stage, its duration and any retries. |
+
+Example CloudWatch Logs Insights query on the query Lambda's log group:
+
+```
+filter event = "query_succeeded"
+| stats count() as queries, avg(latency_ms) as avg_ms, pct(latency_ms, 90) as p90_ms, avg(citations) as avg_citations by bin(1h)
+```
 
 ## Deploy
 
@@ -121,6 +134,8 @@ It exits non-zero if any case fails, so it can gate a CI pipeline. Re-run it aft
 | `generation_model_id` | `amazon.titan-text-premier-v1:0` | Model that writes the answers |
 | `chunk_size_chars` / `chunk_overlap_chars` | `2000` / `200` | Chunking behaviour |
 | `embedding_dimensions` | `1024` | Titan v2 embedding size |
+| `alarm_email` | `""` | Email for alarm notifications (empty = no email) |
+| `query_latency_alarm_ms` | `15000` | p90 query latency alarm threshold |
 | `api_throttle_rate_limit` / `api_throttle_burst_limit` | `5` / `10` | Requests per second and burst allowed on the query API |
 
 ## Clean up

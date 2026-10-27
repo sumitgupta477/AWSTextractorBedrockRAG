@@ -16,6 +16,10 @@ resource "aws_lambda_function" "query_handler" {
   timeout          = 30
   memory_size      = 256
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       KNOWLEDGE_BASE_ID = aws_bedrockagent_knowledge_base.rag.knowledge_base_id
@@ -79,6 +83,22 @@ resource "aws_apigatewayv2_stage" "api_stage" {
   api_id      = aws_apigatewayv2_api.rag_api[0].id
   name        = var.api_stage_name
   auto_deploy = true
+
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.api_access_logs[0].arn
+    format = jsonencode({
+      requestId        = "$context.requestId"
+      ip               = "$context.identity.sourceIp"
+      requestTime      = "$context.requestTime"
+      routeKey         = "$context.routeKey"
+      status           = "$context.status"
+      responseLength   = "$context.responseLength"
+      latencyMs        = "$context.responseLatency"
+      integrationMs    = "$context.integrationLatency"
+      authorizerStatus = "$context.authorizer.status"
+      errorMessage     = "$context.error.message"
+    })
+  }
 
   # Rate-limit the endpoint so a leaked key or a runaway client can't run up the Bedrock bill.
   default_route_settings {
