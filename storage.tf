@@ -52,7 +52,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "textract_output" 
 # ============================================================
 # S3 Vectors support in the Terraform AWS provider landed in v6.27.0
 resource "aws_s3vectors_vector_bucket" "vectors" {
-  bucket_name = "${var.project_name}-${var.environment}-vector-bucket"
+  vector_bucket_name = "${var.project_name}-${var.environment}-vector-bucket"
   force_destroy = true
   tags = {
     Name        = "${var.project_name}-vectors"
@@ -61,7 +61,7 @@ resource "aws_s3vectors_vector_bucket" "vectors" {
 }
 
 resource "aws_s3vectors_index" "bedrock_index" {
-  bucket_name = aws_s3vectors_vector_bucket.vectors.bucket_name
+  vector_bucket_name = aws_s3vectors_vector_bucket.vectors.vector_bucket_name
   index_name  = "bedrock-knowledge-base-index"
   dimension   = var.embedding_dimensions
   distance_metric = "cosine"
