@@ -23,10 +23,15 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "~1.9"
+          terraform_wrapper: false
       - name: Init (no backend, no credentials needed)
         run: terraform init -backend=false -input=false
       - name: Validate
-        run: terraform validate
+        # Errors are surfaced as annotations on the PR, so they're readable without opening the log.
+        run: |
+          terraform validate -json > validate.json || true
+          jq -r '.diagnostics[] | "::\(if .severity == "error" then "error" else "warning" end) file=\(.range.filename // "main"),line=\(.range.start.line // 1)::\(.summary): \(.detail // "")"' validate.json
+          jq -e '.valid' validate.json > /dev/null
       - name: Format check (advisory)
         run: terraform fmt -check -recursive -diff
         continue-on-error: true
