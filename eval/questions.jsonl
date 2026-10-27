@@ -1,0 +1,3 @@
+{"question": "Replace with a question about one of your documents", "expected_keywords": ["keyword one", "keyword two"], "expected_source": "sample.pdf"}
+{"question": "What is the main topic of the document?", "expected_keywords": ["replace", "me"], "expected_source": "sample.pdf"}
+{"question": "Ask something the documents do NOT cover, to check the model admits it doesn't know", "expected_keywords": [], "expect_no_answer": true}
