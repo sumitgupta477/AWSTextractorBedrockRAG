@@ -50,6 +50,25 @@ git add evals/baseline.json
 
 Until `baseline.json` exists, the check prints a warning and passes.
 
+## CloudWatch alerts
+
+Every run publishes its scores, plus a `DriftDetected` metric (1 or 0), to CloudWatch namespace `LLMEval/TextractBedrockRAG`. [`eval_monitoring.tf`](../eval_monitoring.tf) creates:
+
+- an **alarm** that fires when a run detects drift, and notifies an **SNS topic** (email, or Slack/PagerDuty subscribed to the topic)
+- a **dashboard** with each score, error rate and answer latency over time
+- the **IAM role** GitHub Actions assumes through OIDC: allowed to call the judge model and to `PutMetricData` in that namespace only
+
+Setup:
+
+```bash
+terraform apply -var project_name=my-rag -var eval_alert_email=you@example.com   # confirm the email AWS sends you
+terraform output -raw eval_role_arn   # save as the AWS_EVAL_ROLE_ARN GitHub secret
+```
+
+If your AWS account already has a GitHub OIDC provider, add `-var create_github_oidc_provider=false`.
+
+To publish from your own machine: `python3 evals/drift_check.py evals/results/latest.json --cloudwatch-namespace LLMEval/TextractBedrockRAG` (uses boto3 if installed, otherwise the AWS CLI).
+
 ## Configuration
 
 | Setting | Default | How to change |
@@ -58,7 +77,7 @@ Until `baseline.json` exists, the check prints a warning and passes.
 | Judge model | `bedrock:amazon.nova-pro-v1:0` | `EVAL_GRADER` env var, e.g. `bedrock:us.amazon.nova-pro-v1:0` for an inference profile, or `openai:chat:gpt-4o` |
 | Drift tolerance | 0.05 | `drift_check.py --tolerance 0.03` |
 
-For CI, create an IAM role that GitHub can assume through OIDC, allowed `bedrock:InvokeModel` on the judge model. Store its ARN as the `AWS_EVAL_ROLE_ARN` secret, and the API URL as the `RAG_API_URL` repository variable.
+For CI, store the `eval_role_arn` Terraform output as the `AWS_EVAL_ROLE_ARN` secret and the API URL as the `RAG_API_URL` repository variable (see [CloudWatch alerts](#cloudwatch-alerts)).
 
 ## Files
 

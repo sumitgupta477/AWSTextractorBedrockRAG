@@ -16,6 +16,11 @@ What it checks:
   * Fingerprint: warns if the model, grader or promptfoo version differs from
     the baseline, because then a score change may not be the app's fault.
 
+With --cloudwatch-namespace, every score plus a DriftDetected metric (1 or 0)
+is also published to Amazon CloudWatch, where an alarm can notify you through
+SNS (see eval_monitoring.tf). Publishing uses boto3 if installed, otherwise
+the AWS CLI.
+
 Metrics are compared only over tests present in both runs, so adding a test
 does not count as drift. The script uses only the Python standard library.
 Exit code: 0 = no drift, 1 = drift detected, 2 = bad input.
@@ -25,7 +30,9 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -189,6 +196,40 @@ def compare(baseline, current, tolerance, latency_tolerance, token_tolerance, fa
     return drift, lines, warnings
 
 
+def publish_cloudwatch(namespace, scores, drift, avg_latency_ms):
+    """Send the run's scores to CloudWatch. Returns an error string, or None on success."""
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    data = [{"MetricName": m, "Value": round(v, 4), "Unit": "None", "Timestamp": stamp}
+            for m, v in sorted(scores.items())]
+    data.append({"MetricName": "DriftDetected", "Value": 1 if drift else 0, "Unit": "Count", "Timestamp": stamp})
+    if avg_latency_ms is not None:
+        data.append({"MetricName": "avg_latency_ms", "Value": avg_latency_ms, "Unit": "Milliseconds",
+                     "Timestamp": stamp})
+    try:
+        import boto3  # noqa: PLC0415 - optional dependency
+        client = boto3.client("cloudwatch")
+        for d in data:
+            d["Timestamp"] = datetime.now(timezone.utc)
+        for i in range(0, len(data), 20):
+            client.put_metric_data(Namespace=namespace, MetricData=data[i:i + 20])
+        return None
+    except ImportError:
+        pass
+    except Exception as e:  # noqa: BLE001 - report any AWS error, don't crash the check
+        return f"boto3 put_metric_data failed: {e}"
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(data, f)
+        path = f.name
+    try:
+        res = subprocess.run(["aws", "cloudwatch", "put-metric-data", "--namespace", namespace,
+                              "--metric-data", f"file://{path}"], capture_output=True, text=True)
+        return None if res.returncode == 0 else f"aws cloudwatch put-metric-data failed: {res.stderr.strip()}"
+    except FileNotFoundError:
+        return "neither boto3 nor the AWS CLI is available"
+    finally:
+        os.unlink(path)
+
+
 def fmt(v):
     return "-" if v is None else f"{v:.3f}"
 
@@ -198,6 +239,15 @@ def write_summary(text):
     if path:
         with open(path, "a", encoding="utf-8") as f:
             f.write(text + "\n")
+
+
+def report_publish(namespace, scores, drift, current):
+    err = publish_cloudwatch(namespace, scores, drift, current.get("avg_latency_ms"))
+    if err:
+        print(f"warning: could not publish to CloudWatch: {err}")
+    else:
+        print(f"Published {len(scores)} scores plus DriftDetected to CloudWatch namespace {namespace}.")
+    return err
 
 
 def main():
@@ -213,6 +263,9 @@ def main():
                    help="relative token-usage increase that triggers a warning (default 0.3 = +30%%)")
     p.add_argument("--fail-on-cost", action="store_true", help="treat latency/token warnings as drift")
     p.add_argument("--require-baseline", action="store_true", help="fail if no baseline exists")
+    p.add_argument("--cloudwatch-namespace", default=os.environ.get("EVAL_CLOUDWATCH_NAMESPACE"),
+                   help="also publish scores and DriftDetected to this CloudWatch namespace "
+                        "(or set EVAL_CLOUDWATCH_NAMESPACE)")
     args = p.parse_args()
 
     data, rows = load_results(args.results)
@@ -233,6 +286,10 @@ def main():
                "version and save it with --update-baseline, then commit baseline.json.")
         print(("error: " if args.require_baseline else "warning: ") + msg)
         write_summary(f"## LLM eval drift check\n\n:warning: {msg}")
+        if args.cloudwatch_namespace:
+            # Still record the scores so the dashboard has history from day one.
+            report_publish(args.cloudwatch_namespace,
+                           aggregate(current["tests"], current["tests"].keys()), False, current)
         return 1 if args.require_baseline else 0
 
     with open(args.baseline, encoding="utf-8") as f:
@@ -240,6 +297,11 @@ def main():
 
     drift, lines, warnings = compare(baseline, current, args.tolerance, args.latency_tolerance,
                                      args.token_tolerance, args.fail_on_cost)
+    if args.cloudwatch_namespace:
+        shared = set(baseline["tests"]) & set(current["tests"])
+        err = report_publish(args.cloudwatch_namespace, aggregate(current["tests"], shared), drift, current)
+        if err:
+            warnings.append(f"Could not publish to CloudWatch: {err}")
     title = "## LLM eval drift check: " + ("DRIFT DETECTED" if drift else "no drift")
     body = "\n".join([title, ""] + lines)
     if warnings:

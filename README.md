@@ -53,7 +53,7 @@ Check the current [Bedrock](https://aws.amazon.com/bedrock/pricing/) and [Textra
 
 ## RAG evaluation and drift detection
 
-The [`evals/`](evals/) suite asks the deployed API 16 questions about a fictional test document and scores correctness, faithfulness to the retrieved chunks (LLM judge), citations, and whether it declines questions the document can't answer. `drift_check.py` compares each run with a committed baseline and fails if any score drops by more than 0.05. A GitHub Actions workflow runs it weekly and on demand. See [evals/README.md](evals/README.md).
+The [`evals/`](evals/) suite asks the deployed API 16 questions about a fictional test document and scores correctness, faithfulness to the retrieved chunks (LLM judge), citations, and whether it declines questions the document can't answer. `drift_check.py` compares each run with a committed baseline and fails if any score drops by more than 0.05. Scores also go to CloudWatch, where an alarm notifies an SNS topic on drift. A GitHub Actions workflow runs it weekly and on demand. See [evals/README.md](evals/README.md).
 
 ## Observability
 

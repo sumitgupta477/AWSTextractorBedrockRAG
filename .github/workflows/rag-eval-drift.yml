@@ -8,8 +8,14 @@
 # Setup (Settings > Secrets and variables > Actions):
 #   Variable RAG_API_URL        - the api_gateway_endpoint Terraform output
 #   Variable AWS_REGION         - optional, defaults to us-east-1
-#   Secret   AWS_EVAL_ROLE_ARN  - IAM role GitHub can assume via OIDC, allowed
-#                                 bedrock:InvokeModel on the judge model
+#   Secret   AWS_EVAL_ROLE_ARN  - the eval_role_arn Terraform output: an OIDC
+#                                 role that can call the judge model and publish
+#                                 scores to CloudWatch (eval_monitoring.tf)
+#   Variable EVAL_CLOUDWATCH_NAMESPACE - optional, defaults to
+#                                 LLMEval/TextractBedrockRAG
+#
+# Scores and a DriftDetected metric go to CloudWatch, where an alarm notifies
+# the SNS topic (email, Slack or PagerDuty) when drift is detected.
 
 name: RAG eval drift check
 
@@ -34,6 +40,7 @@ jobs:
       RAG_API_URL: ${{ vars.RAG_API_URL }}
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       AWS_EVAL_ROLE_ARN: ${{ secrets.AWS_EVAL_ROLE_ARN }}
+      EVAL_CLOUDWATCH_NAMESPACE: ${{ vars.EVAL_CLOUDWATCH_NAMESPACE || 'LLMEval/TextractBedrockRAG' }}
       PROMPTFOO_VERSION: "0.125.1"
       PROMPTFOO_DISABLE_TELEMETRY: "1"
       PROMPTFOO_DISABLE_UPDATE: "1"
