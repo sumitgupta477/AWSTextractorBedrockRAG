@@ -12,3 +12,6 @@ crash.log
 # Python
 __pycache__/
 *.pyc
+
+# LLM eval run outputs (the baseline itself is committed)
+evals/results/
