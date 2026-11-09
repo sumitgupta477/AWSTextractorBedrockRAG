@@ -69,6 +69,9 @@ If your AWS account already has a GitHub OIDC provider, add `-var create_github_
 
 To publish from your own machine: `python3 evals/drift_check.py evals/results/latest.json --cloudwatch-namespace LLMEval/TextractBedrockRAG` (uses boto3 if installed, otherwise the AWS CLI).
 
+
+**Cost:** about $0.10 a month for the alarm, or nothing within the free tier of 10 alarms. Custom metrics are billed by the hour, and only for hours in which data is sent, so a weekly run costs a fraction of a cent. The dashboard is free if the account has 3 or fewer custom dashboards, and $3 a month otherwise. Delete the dashboard resource if you don't need it. The eval's model calls (OpenAI or Bedrock) are billed separately.
+
 ## Configuration
 
 | Setting | Default | How to change |
