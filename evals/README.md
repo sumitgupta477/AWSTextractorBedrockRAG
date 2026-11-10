@@ -26,7 +26,7 @@ The workflow (`.github/workflows/rag-eval-drift.yml`) runs **weekly** and on dem
 
 ## Run it locally
 
-Requirements: the stack deployed, Node.js 20+, Python 3.9+, AWS credentials allowed to call `bedrock:InvokeModel` on the judge model (Amazon Nova Pro by default; enable model access in the Bedrock console).
+Requirements: the stack deployed, Node.js 22+ (promptfoo needs it), Python 3.9+, AWS credentials allowed to call `bedrock:InvokeModel` on the judge model (Amazon Nova Pro by default; enable model access in the Bedrock console).
 
 ```bash
 # 1. One time: index the test document
@@ -34,6 +34,7 @@ Requirements: the stack deployed, Node.js 20+, Python 3.9+, AWS credentials allo
 
 # 2. Run the eval and compare with the baseline
 export RAG_API_URL="$(terraform output -raw api_gateway_endpoint)"
+export RAG_API_KEY="$(terraform output -raw api_key)"   # the API requires an x-api-key header
 mkdir -p evals/results
 npx promptfoo@0.125.1 eval -c evals/promptfooconfig.yaml --repeat 2 -o evals/results/latest.json
 python3 evals/drift_check.py evals/results/latest.json
@@ -77,10 +78,11 @@ To publish from your own machine: `python3 evals/drift_check.py evals/results/la
 | Setting | Default | How to change |
 |---|---|---|
 | API under test | none (required) | `RAG_API_URL` env var |
+| API key | none (required) | `RAG_API_KEY` env var (`terraform output -raw api_key`) |
 | Judge model | `bedrock:amazon.nova-pro-v1:0` | `EVAL_GRADER` env var, e.g. `bedrock:us.amazon.nova-pro-v1:0` for an inference profile, or `openai:chat:gpt-4o` |
 | Drift tolerance | 0.05 | `drift_check.py --tolerance 0.03` |
 
-For CI, store the `eval_role_arn` Terraform output as the `AWS_EVAL_ROLE_ARN` secret and the API URL as the `RAG_API_URL` repository variable (see [CloudWatch alerts](#cloudwatch-alerts)).
+For CI, store the `eval_role_arn` Terraform output as the `AWS_EVAL_ROLE_ARN` secret, the `api_key` output as the `RAG_API_KEY` secret, and the API URL as the `RAG_API_URL` repository variable (see [CloudWatch alerts](#cloudwatch-alerts)).
 
 ## Files
 
