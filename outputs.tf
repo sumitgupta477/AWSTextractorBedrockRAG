@@ -37,3 +37,8 @@ output "alerts_topic_arn" {
   description = "SNS topic that receives alarm notifications"
   value       = aws_sns_topic.alerts.arn
 }
+
+output "eval_samples_bucket" {
+  description = "Bucket holding sampled live answers (samples/) and nightly LLM-judge reports (reports/)"
+  value       = var.enable_online_eval ? aws_s3_bucket.eval_samples[0].bucket : "online eval disabled"
+}

@@ -26,6 +26,8 @@ resource "aws_lambda_function" "query_handler" {
       MODEL_ID          = var.generation_model_id
       GUARDRAIL_ID      = var.enable_guardrail ? aws_bedrock_guardrail.rag[0].guardrail_id : ""
       GUARDRAIL_VERSION = var.enable_guardrail ? aws_bedrock_guardrail_version.rag[0].version : ""
+      EVAL_SAMPLE_BUCKET = var.enable_online_eval ? aws_s3_bucket.eval_samples[0].bucket : ""
+      EVAL_SAMPLE_RATE   = tostring(var.online_eval_sample_rate)
     }
   }
 }
