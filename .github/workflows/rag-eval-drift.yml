@@ -1,0 +1,87 @@
+# Runs the RAG regression eval against the deployed API and fails if quality
+# drifts from evals/baseline.json.
+#
+# The eval calls the live /query endpoint, so it tests what is deployed, not
+# the code in a pull request. Run it weekly (catches silent changes to the
+# generation or embedding models) and manually after each deploy.
+#
+# Setup (Settings > Secrets and variables > Actions):
+#   Variable RAG_API_URL        - the api_gateway_endpoint Terraform output
+#   Variable AWS_REGION         - optional, defaults to us-east-1
+#   Secret   AWS_EVAL_ROLE_ARN  - the eval_role_arn Terraform output: an OIDC
+#                                 role that can call the judge model and publish
+#                                 scores to CloudWatch (eval_monitoring.tf)
+#   Variable EVAL_CLOUDWATCH_NAMESPACE - optional, defaults to
+#                                 LLMEval/TextractBedrockRAG
+#
+# Scores and a DriftDetected metric go to CloudWatch, where an alarm notifies
+# the SNS topic (email, Slack or PagerDuty) when drift is detected.
+
+name: RAG eval drift check
+
+on:
+  schedule:
+    - cron: "23 10 * * 1" # Mondays 10:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # for AWS OIDC
+
+concurrency:
+  group: rag-eval
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RAG_API_URL: ${{ vars.RAG_API_URL }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      AWS_EVAL_ROLE_ARN: ${{ secrets.AWS_EVAL_ROLE_ARN }}
+      EVAL_CLOUDWATCH_NAMESPACE: ${{ vars.EVAL_CLOUDWATCH_NAMESPACE || 'LLMEval/TextractBedrockRAG' }}
+      PROMPTFOO_VERSION: "0.125.1"
+      PROMPTFOO_DISABLE_TELEMETRY: "1"
+      PROMPTFOO_DISABLE_UPDATE: "1"
+      # Let drift_check.py decide pass/fail instead of promptfoo's own exit code.
+      PROMPTFOO_FAILED_TEST_EXIT_CODE: "0"
+    steps:
+      - name: Skip when not configured
+        if: env.RAG_API_URL == '' || env.AWS_EVAL_ROLE_ARN == ''
+        run: echo "::warning::RAG_API_URL variable or AWS_EVAL_ROLE_ARN secret is not set; skipping the RAG eval."
+
+      - uses: actions/checkout@v4
+        if: env.RAG_API_URL != '' && env.AWS_EVAL_ROLE_ARN != ''
+
+      - uses: actions/setup-node@v4
+        if: env.RAG_API_URL != '' && env.AWS_EVAL_ROLE_ARN != ''
+        with:
+          node-version: "20"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: env.RAG_API_URL != '' && env.AWS_EVAL_ROLE_ARN != ''
+        with:
+          role-to-assume: ${{ env.AWS_EVAL_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run eval (2 repeats to average out model randomness)
+        if: env.RAG_API_URL != '' && env.AWS_EVAL_ROLE_ARN != ''
+        run: |
+          mkdir -p evals/results
+          npx -y "promptfoo@${PROMPTFOO_VERSION}" eval \
+            -c evals/promptfooconfig.yaml \
+            --repeat 2 --no-cache --no-table \
+            -o evals/results/latest.json
+
+      - name: Compare with baseline
+        if: env.RAG_API_URL != '' && env.AWS_EVAL_ROLE_ARN != ''
+        run: python3 evals/drift_check.py evals/results/latest.json
+
+      - name: Upload results
+        if: always() && env.RAG_API_URL != '' && env.AWS_EVAL_ROLE_ARN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-eval-results
+          path: evals/results/latest.json
+          if-no-files-found: ignore

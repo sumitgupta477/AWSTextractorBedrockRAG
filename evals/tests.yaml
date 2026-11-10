@@ -1,0 +1,187 @@
+# Golden dataset for the RAG pipeline, based on the fictional document in
+# sample_docs/northwind_travel_policy.pdf (upload it before running; see README).
+#
+# Answerable questions are scored on:
+#   correctness   - the answer contains the key fact from the document
+#   faithfulness  - every claim is supported by the retrieved chunks (LLM judge)
+#   citations     - the answer cites the Northwind policy document
+# Unanswerable questions are scored on:
+#   no_hallucination - the answer says the documents don't cover it instead of
+#                      inventing a policy (LLM judge)
+#
+# Changing this file changes what "good" means, so re-baseline afterwards.
+
+- description: "answerable: per diem"
+  vars:
+    query: "What is the daily meal allowance when travelling?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "82"
+    - &faithful
+      type: context-faithfulness
+      metric: faithfulness
+      threshold: 0.7
+      # Judge the answer against the chunks the API actually retrieved
+      # (context-faithfulness reads the question from the `query` var).
+      contextTransform: "context.metadata.contexts.length ? context.metadata.contexts : ['(no context retrieved)']"
+    - &cited
+      type: javascript
+      metric: citations
+      value: (context.providerResponse?.metadata?.sources || []).some((s) => s.includes('northwind_travel_policy'))
+
+- description: "answerable: hotel limit Calgary"
+  vars:
+    query: "What is the maximum nightly hotel rate in Calgary?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "245"
+    - *faithful
+    - *cited
+
+- description: "answerable: hotel limit other Canadian city"
+  vars:
+    query: "How much can I spend per night on a hotel in Winnipeg?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "190"
+    - *faithful
+    - *cited
+
+- description: "answerable: hotel limit United States"
+  vars:
+    query: "What is the hotel limit per night for a trip to Seattle?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "275"
+    - *faithful
+    - *cited
+
+- description: "answerable: business class rule"
+  vars:
+    query: "When am I allowed to fly business class?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "9"
+    - type: icontains-any
+      metric: correctness
+      value: ["vice president", "VP"]
+    - *faithful
+    - *cited
+
+- description: "answerable: mileage rate"
+  vars:
+    query: "What is the reimbursement rate for using my personal car?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "0.71"
+    - *faithful
+    - *cited
+
+- description: "answerable: claim deadline"
+  vars:
+    query: "How long do I have to submit an expense claim after a trip?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "30"
+    - *faithful
+    - *cited
+
+- description: "answerable: receipt threshold"
+  vars:
+    query: "Above what amount do I need a receipt?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "25"
+    - *faithful
+    - *cited
+
+- description: "answerable: booking lead time"
+  vars:
+    query: "How far in advance must flights be booked?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "14"
+    - *faithful
+    - *cited
+
+- description: "answerable: lost receipt"
+  vars:
+    query: "What should I do if I lose a receipt?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "Missing Receipt Declaration"
+    - *faithful
+    - *cited
+
+- description: "answerable: alcohol cap"
+  vars:
+    query: "Is alcohol reimbursed at client dinners, and is there a limit?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "40"
+    - *faithful
+    - *cited
+
+- description: "answerable: policy owner"
+  vars:
+    query: "Which team owns the travel policy and who leads it?"
+  assert:
+    - type: icontains
+      metric: correctness
+      value: "Priya Raman"
+    - *faithful
+    - *cited
+
+- description: "answerable: paraphrased calculation"
+  vars:
+    query: "If I drive my own car 100 km to visit a client, how much will I be reimbursed?"
+  assert:
+    - type: icontains-any
+      metric: correctness
+      value: ["71", "0.71"]
+    - *faithful
+    - *cited
+
+- description: "unanswerable: parental leave"
+  vars:
+    query: "What is Northwind Robotics' parental leave policy?"
+  assert:
+    - type: llm-rubric
+      metric: no_hallucination
+      value: >-
+        The answer says the available documents do not contain this information
+        (or that it cannot find it). It must not invent a specific policy, amount,
+        or name that is not stated in the Northwind Robotics travel policy.
+
+- description: "unanswerable: hotel limit London"
+  vars:
+    query: "What is the nightly hotel limit for a trip to London, UK?"
+  assert:
+    - type: llm-rubric
+      metric: no_hallucination
+      value: >-
+        The answer says the available documents do not contain this information
+        (or that it cannot find it). It must not invent a specific policy, amount,
+        or name that is not stated in the Northwind Robotics travel policy.
+
+- description: "unanswerable: CEO name"
+  vars:
+    query: "Who is the CEO of Northwind Robotics?"
+  assert:
+    - type: llm-rubric
+      metric: no_hallucination
+      value: >-
+        The answer says the available documents do not contain this information
+        (or that it cannot find it). It must not invent a specific policy, amount,
+        or name that is not stated in the Northwind Robotics travel policy.

@@ -29,6 +29,7 @@ An event-driven, fully serverless **Retrieval-Augmented Generation (RAG)** pipel
 - Automated quality evaluation: keyword recall, citation accuracy, abstention and latency
 - Least-privilege IAM per component, CloudWatch logging, encrypted and versioned S3 buckets
 - Infrastructure as code with Terraform
+- RAG evaluation with drift detection: a golden dataset scored for correctness, faithfulness to retrieved chunks, citations and hallucination, checked against a saved baseline in CI (see [RAG evaluation](#rag-evaluation-and-drift-detection))
 
 ## Design decisions
 
@@ -53,6 +54,10 @@ Everything is serverless and pay-per-use, so there is no idle cost apart from sm
 | Lambda, Step Functions, API Gateway | Typically pennies at demo scale |
 
 Check the current [Bedrock](https://aws.amazon.com/bedrock/pricing/) and [Textract](https://aws.amazon.com/textract/pricing/) pricing pages for rates in your region. To see what a real run cost, filter Cost Explorer by the `Project` tag that every resource carries.
+
+## RAG evaluation and drift detection
+
+The [`evals/`](evals/) suite asks the deployed API 16 questions about a fictional test document and scores correctness, faithfulness to the retrieved chunks (LLM judge), citations, and whether it declines questions the document can't answer. `drift_check.py` compares each run with a committed baseline and fails if any score drops by more than 0.05. Scores also go to CloudWatch, where an alarm notifies an SNS topic on drift. A GitHub Actions workflow runs it weekly and on demand. See [evals/README.md](evals/README.md).
 
 ## Observability
 
