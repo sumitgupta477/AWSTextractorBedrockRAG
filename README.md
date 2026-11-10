@@ -33,6 +33,7 @@ An event-driven, fully serverless **Retrieval-Augmented Generation (RAG)** pipel
 - CI: Terraform validation and unit tests on every pull request, plus an on-demand answer-quality eval
 - Least-privilege IAM per component, CloudWatch logging, encrypted and versioned S3 buckets
 - Infrastructure as code with Terraform
+- RAG evaluation with drift detection: a golden dataset scored for correctness, faithfulness to retrieved chunks, citations and hallucination, checked against a saved baseline in CI (see [RAG evaluation](#rag-evaluation-and-drift-detection))
 
 ## Design decisions
 
@@ -65,6 +66,10 @@ Check the current [Bedrock](https://aws.amazon.com/bedrock/pricing/) and [Textra
 - **Budget**: `aws_budgets_budget` tracks monthly spend on resources tagged with this project (default $25) and alerts the SNS topic at 80% of actual spend and when the forecast exceeds 100%. Activate `Project` as a cost allocation tag once in the Billing console so the filter works (it can take up to 24 hours). Set `-var monthly_budget_usd=0` to disable.
 - **Throttling** on the API caps how fast Bedrock can be called.
 - **Token usage** appears on the dashboard. RetrieveAndGenerate doesn't return per-request token counts, so for exact cost per query enable Bedrock model invocation logging.
+
+## RAG evaluation and drift detection
+
+The [`evals/`](evals/) suite asks the deployed API 16 questions about a fictional test document and scores correctness, faithfulness to the retrieved chunks (LLM judge), citations, and whether it declines questions the document can't answer. `drift_check.py` compares each run with a committed baseline and fails if any score drops by more than 0.05. Scores also go to CloudWatch, where an alarm notifies an SNS topic on drift. A GitHub Actions workflow runs it weekly and on demand. See [evals/README.md](evals/README.md).
 
 ## Observability
 
