@@ -70,7 +70,15 @@ Check the current [Bedrock](https://aws.amazon.com/bedrock/pricing/) and [Textra
 
 ## RAG evaluation and drift detection
 
-The [`evals/`](evals/) suite asks the deployed API 16 questions about a fictional test document and scores correctness, faithfulness to the retrieved chunks (LLM judge), citations, and whether it declines questions the document can't answer. `drift_check.py` compares each run with a committed baseline and fails if any score drops by more than 0.05. Scores also go to CloudWatch, where an alarm notifies an SNS topic on drift. A GitHub Actions workflow runs it weekly and on demand. See [evals/README.md](evals/README.md).
+The repo has three complementary layers of evaluation:
+
+| Layer | Where | When it runs | What it answers |
+|---|---|---|---|
+| **Offline eval** | [`eval/run_eval.py`](eval/run_eval.py) | On demand, or as a CI gate | "Do answers to my own test questions hit the expected facts, cite the right document and abstain when they should?" |
+| **Regression and drift** | [`evals/`](evals/) (promptfoo) | Weekly and after each deploy, in GitHub Actions | "Did quality drop compared with the last accepted baseline?" Scores go to CloudWatch, and an alarm notifies SNS on drift |
+| **Online judge** | `lambda/judge` | Nightly, on a 5% sample of real questions | "How good are answers to questions real users ask?" |
+
+The [`evals/`](evals/) suite asks the deployed API 16 questions about a fictional test document and scores correctness, faithfulness to the retrieved chunks (LLM judge), citations, and whether it declines questions the document can't answer. `drift_check.py` compares each run with a committed baseline and fails if any score drops by more than 0.05. It authenticates with the same `x-api-key` as other clients. See [evals/README.md](evals/README.md).
 
 ## Observability
 
