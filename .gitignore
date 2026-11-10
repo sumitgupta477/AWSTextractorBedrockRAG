@@ -20,3 +20,6 @@ judge.zip
 eval/judge_gold.jsonl
 eval/judge_comparison.json
 samples/
+
+# LLM eval run outputs (the baseline itself is committed)
+evals/results/
