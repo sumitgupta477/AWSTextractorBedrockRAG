@@ -1,4 +1,5 @@
 import json
+import time
 import boto3
 import os
 
@@ -7,6 +8,8 @@ knowledge_base_id = os.environ['KNOWLEDGE_BASE_ID']
 model_id = os.environ['MODEL_ID']
 
 def lambda_handler(event, context):
+    started = time.perf_counter()
+    request_id = getattr(context, 'aws_request_id', None)
     try:
         # Parse request body
         body = json.loads(event.get('body', '{}'))
@@ -27,17 +30,37 @@ def lambda_handler(event, context):
             }
         )
         
+        citations = response.get('citations', [])
+        log_event('query_succeeded', request_id, started,
+                  query_chars=len(user_query),
+                  answer_chars=len(response['output']['text']),
+                  citations=len(citations),
+                  references=sum(len(c.get('retrievedReferences', [])) for c in citations))
+
         return respond(200, {
             'answer': response['output']['text'],
-            'citations': response.get('citations', [])
+            'citations': citations
         })
     
     except json.JSONDecodeError:
         return respond(400, {'error': 'request body must be valid JSON'})
     except Exception as e:
         # Log the details to CloudWatch, but don't expose internals to API callers.
-        print(f"Query failed: {e!r}")
+        log_event('query_failed', request_id, started, error_type=type(e).__name__, error=repr(e))
         return respond(500, {'error': 'query failed'})
+
+def log_event(event_name, request_id, started, **fields):
+    """Emit one JSON log line, queryable with CloudWatch Logs Insights.
+
+    The question text itself is not logged, only its size, to avoid storing user data.
+    """
+    print(json.dumps({
+        'event': event_name,
+        'request_id': request_id,
+        'model': model_id,
+        'latency_ms': round((time.perf_counter() - started) * 1000),
+        **fields,
+    }))
 
 def model_arn():
     """Accept either a full model / inference-profile ARN or a plain foundation model ID."""

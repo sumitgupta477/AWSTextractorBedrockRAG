@@ -13,6 +13,9 @@ resource "aws_lambda_function" "chunking" {
   role             = aws_iam_role.lambda_general_role.arn
   handler          = "main.lambda_handler"
   runtime          = "python3.12"
+  tracing_config {
+    mode = "Active"
+  }
   timeout          = 300
   memory_size      = 512
 
@@ -61,6 +64,9 @@ resource "aws_lambda_function" "sfn_trigger" {
   role             = aws_iam_role.lambda_general_role.arn
   handler          = "main.lambda_handler"
   runtime          = "python3.12"
+  tracing_config {
+    mode = "Active"
+  }
   timeout          = 60
   memory_size      = 128
 

@@ -22,3 +22,18 @@ output "sfn_state_machine_arn" {
   description = "Step Functions state machine ARN"
   value       = aws_sfn_state_machine.ingestion_pipeline.arn
 }
+output "api_key" {
+  description = "API key for the query endpoint; send it in the x-api-key header (read with: terraform output -raw api_key)"
+  value       = random_password.api_key.result
+  sensitive   = true
+}
+
+output "dashboard_url" {
+  description = "CloudWatch dashboard for the pipeline and query API"
+  value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards/dashboard/${aws_cloudwatch_dashboard.rag.dashboard_name}"
+}
+
+output "alerts_topic_arn" {
+  description = "SNS topic that receives alarm notifications"
+  value       = aws_sns_topic.alerts.arn
+}
