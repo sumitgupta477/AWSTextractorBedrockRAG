@@ -14,6 +14,8 @@ __pycache__/
 *.pyc
 eval/results.json
 authorizer.zip
+.pytest_cache/
+__pycache__/
 
 # LLM eval run outputs (the baseline itself is committed)
 evals/results/
