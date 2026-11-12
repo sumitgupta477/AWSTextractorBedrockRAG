@@ -128,6 +128,114 @@ def test_query_applies_guardrail(monkeypatch):
     assert kb["generationConfiguration"]["guardrailConfiguration"] == {"guardrailId": "gr123", "guardrailVersion": "1"}
 
 
+# ---------------------------------------------------------------- query cache
+
+class FakeCacheAws(FakeBedrock):
+    """Fake Bedrock plus an in-memory DynamoDB table."""
+
+    def __init__(self):
+        super().__init__()
+        self.items = {}
+        self.guardrail_action = "NONE"
+
+    def retrieve_and_generate(self, **kwargs):
+        response = super().retrieve_and_generate(**kwargs)
+        response["guardrailAction"] = self.guardrail_action
+        return response
+
+    def batch_get_item(self, RequestItems):
+        [(table, spec)] = RequestItems.items()
+        found = [self.items[k["cache_key"]["S"]] for k in spec["Keys"] if k["cache_key"]["S"] in self.items]
+        return {"Responses": {table: found}}
+
+    def put_item(self, TableName, Item):
+        self.items[Item["cache_key"]["S"]] = Item
+
+    def bump_version(self):
+        """What the ingestion pipeline does after a document is indexed."""
+        current = int(self.items.get("#kb_version", {}).get("version", {}).get("N", "0"))
+        self.items["#kb_version"] = {"cache_key": {"S": "#kb_version"}, "version": {"N": str(current + 1)}}
+
+
+def cached_query_module(monkeypatch, ttl="3600"):
+    fake = FakeCacheAws()
+    env = {"KNOWLEDGE_BASE_ID": "kb1", "MODEL_ID": "m", "GUARDRAIL_ID": "", "GUARDRAIL_VERSION": "",
+           "EVAL_SAMPLE_BUCKET": "", "CACHE_TABLE": "cache", "CACHE_TTL_SECONDS": ttl}
+    return load("query", "lambda/query/main.py", env, monkeypatch, fake), fake
+
+
+def ask(query, question, **extra):
+    resp = query.lambda_handler({"body": json.dumps({"query": question, **extra})}, None)
+    assert resp["statusCode"] == 200
+    return json.loads(resp["body"])
+
+
+def test_cache_serves_repeated_question(monkeypatch):
+    query, fake = cached_query_module(monkeypatch)
+    first = ask(query, "What is the hotel limit?")
+    second = ask(query, "  what is the HOTEL limit? ")  # case and spacing don't matter
+    assert first["cached"] is False and second["cached"] is True
+    assert second["answer"] == first["answer"] and second["citations"] == first["citations"]
+    assert len(fake.calls) == 1
+
+
+def test_cache_misses_on_different_question(monkeypatch):
+    query, fake = cached_query_module(monkeypatch)
+    ask(query, "one")
+    assert ask(query, "two")["cached"] is False
+    assert len(fake.calls) == 2
+
+
+def test_cache_invalidated_when_a_document_is_indexed(monkeypatch):
+    query, fake = cached_query_module(monkeypatch)
+    ask(query, "q")
+    fake.bump_version()
+    assert ask(query, "q")["cached"] is False
+    assert ask(query, "q")["cached"] is True
+    assert len(fake.calls) == 2
+
+
+def test_cache_entry_expires(monkeypatch):
+    query, fake = cached_query_module(monkeypatch)
+    ask(query, "q")
+    monkeypatch.setattr(query.time, "time", lambda: 10 ** 12)
+    assert ask(query, "q")["cached"] is False
+
+
+def test_cache_can_be_bypassed_per_request(monkeypatch):
+    query, fake = cached_query_module(monkeypatch)
+    ask(query, "q")
+    assert ask(query, "q", cache=False)["cached"] is False
+    assert len(fake.calls) == 2
+
+
+def test_cache_disabled_when_ttl_zero(monkeypatch):
+    query, fake = cached_query_module(monkeypatch, ttl="0")
+    ask(query, "q")
+    assert ask(query, "q")["cached"] is False
+    assert fake.items == {}
+
+
+def test_guardrail_blocked_answers_are_not_cached(monkeypatch):
+    query, fake = cached_query_module(monkeypatch)
+    fake.guardrail_action = "INTERVENED"
+    ask(query, "q")
+    assert fake.items == {}
+
+
+def test_cache_failure_never_breaks_the_answer(monkeypatch):
+    query, fake = cached_query_module(monkeypatch)
+    fake.batch_get_item = lambda **kw: (_ for _ in ()).throw(RuntimeError("dynamodb down"))
+    assert ask(query, "q")["answer"] == "The answer."
+    assert fake.items == {}  # nothing is written when the version could not be read
+
+
+def test_cache_does_not_store_the_question_text(monkeypatch):
+    query, fake = cached_query_module(monkeypatch)
+    ask(query, "a very secret question")
+    assert "secret" not in json.dumps(fake.items)
+
+
 # ---------------------------------------------------------------- eval
 
 @pytest.fixture

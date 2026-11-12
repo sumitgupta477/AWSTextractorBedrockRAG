@@ -46,6 +46,7 @@ resource "aws_sfn_state_machine" "ingestion_pipeline" {
     chunking_function_arn = aws_lambda_function.chunking.arn
     knowledge_base_id     = aws_bedrockagent_knowledge_base.rag.id
     data_source_id        = aws_bedrockagent_data_source.rag_data_source.data_source_id
+    cache_table_name      = aws_dynamodb_table.query_cache.name
   })
 }
 

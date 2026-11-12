@@ -1,5 +1,5 @@
 {
-  "Comment": "RAG ingestion pipeline: async Textract OCR -> chunking Lambda -> Bedrock Knowledge Base sync -> wait until indexed",
+  "Comment": "RAG ingestion pipeline: async Textract OCR -> chunking Lambda -> Bedrock Knowledge Base sync -> wait until indexed -> invalidate the answer cache",
   "StartAt": "StartTextract",
   "States": {
     "StartTextract": {
@@ -160,7 +160,7 @@
         {
           "Variable": "$.syncResult.Status",
           "StringEquals": "COMPLETE",
-          "Next": "IngestionSucceeded"
+          "Next": "InvalidateAnswerCache"
         },
         {
           "Or": [
@@ -171,6 +171,30 @@
         }
       ],
       "Default": "WaitForIndexing"
+    },
+    "InvalidateAnswerCache": {
+      "Comment": "Bump the knowledge-base version so the query Lambda stops serving answers cached before this document was indexed.",
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${cache_table_name}",
+        "Key": {
+          "cache_key": { "S": "#kb_version" }
+        },
+        "UpdateExpression": "ADD #v :one",
+        "ExpressionAttributeNames": { "#v": "version" },
+        "ExpressionAttributeValues": { ":one": { "N": "1" } }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "IngestionSucceeded"
     },
     "IngestionSucceeded": {
       "Type": "Succeed"

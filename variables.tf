@@ -62,6 +62,17 @@ variable "api_throttle_burst_limit" {
   default     = 10
 }
 
+variable "query_cache_ttl_seconds" {
+  description = "How long a cached answer is reused for a repeated question, in seconds (0 disables the cache)"
+  type        = number
+  default     = 86400
+
+  validation {
+    condition     = var.query_cache_ttl_seconds >= 0
+    error_message = "query_cache_ttl_seconds must be 0 or greater."
+  }
+}
+
 variable "alarm_email" {
   description = "Email address for alarm notifications (leave empty to skip; AWS sends a confirmation email)"
   type        = string
