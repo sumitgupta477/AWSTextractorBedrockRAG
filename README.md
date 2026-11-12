@@ -66,6 +66,7 @@ Check the current [Bedrock](https://aws.amazon.com/bedrock/pricing/) and [Textra
 
 - **Budget**: `aws_budgets_budget` tracks monthly spend on resources tagged with this project (default $25) and alerts the SNS topic at 80% of actual spend and when the forecast exceeds 100%. Activate `Project` as a cost allocation tag once in the Billing console so the filter works (it can take up to 24 hours). Set `-var monthly_budget_usd=0` to disable.
 - **Throttling** on the API caps how fast Bedrock can be called.
+- **Answer cache**: a repeated question is answered from a DynamoDB table instead of calling Bedrock again. Answers are keyed on a hash of the question (ignoring case and spacing), the model, and the guardrail version; the question text itself is not stored. Entries expire after `query_cache_ttl_seconds` (default 24 hours), and every answer cached before a document finished indexing is retired when the ingestion pipeline completes. Answers blocked by the guardrail are never cached. Responses carry `"cached": true|false`; send `"cache": false` in the request body to force a fresh answer (the evals do). Set `-var query_cache_ttl_seconds=0` to disable.
 - **Token usage** appears on the dashboard. RetrieveAndGenerate doesn't return per-request token counts, so for exact cost per query enable Bedrock model invocation logging.
 
 ## RAG evaluation and drift detection
@@ -228,6 +229,7 @@ The answer-quality eval runs only on demand (Actions → CI → Run workflow →
 | `alarm_email` | `""` | Email for alarm notifications (empty = no email) |
 | `query_latency_alarm_ms` | `15000` | p90 query latency alarm threshold |
 | `api_throttle_rate_limit` / `api_throttle_burst_limit` | `5` / `10` | Requests per second and burst allowed on the query API |
+| `query_cache_ttl_seconds` | `86400` | How long a cached answer is reused for a repeated question (0 disables the cache) |
 
 ## Clean up
 

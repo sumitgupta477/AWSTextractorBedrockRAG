@@ -48,7 +48,7 @@ NO_ANSWER_PHRASES = (
 def ask(url, api_key, question, timeout=60):
     req = urllib.request.Request(
         url,
-        data=json.dumps({"query": question}).encode("utf-8"),
+        data=json.dumps({"query": question, "cache": False}).encode("utf-8"),
         headers={"Content-Type": "application/json", "x-api-key": api_key},
         method="POST",
     )

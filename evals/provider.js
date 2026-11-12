@@ -30,7 +30,8 @@ class RagApiProvider {
       const res = await fetch(this.url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": this.apiKey },
-        body: JSON.stringify({ query: question }),
+        // cache: false asks for a fresh answer, so the eval measures the model, not the answer cache.
+        body: JSON.stringify({ query: question, cache: false }),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
       const body = await res.json().catch(() => ({}));

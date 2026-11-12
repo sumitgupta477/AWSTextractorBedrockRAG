@@ -41,6 +41,7 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
 # - sfn-trigger starts the state machine
 # - chunking reads Textract results and writes chunks to the output bucket
 # - query calls Bedrock RetrieveAndGenerate against the knowledge base
+#   and reads/writes the answer cache
 resource "aws_iam_role_policy" "lambda_pipeline_access" {
   name = "${var.project_name}-lambda-pipeline-access"
   role = aws_iam_role.lambda_general_role.id
@@ -79,6 +80,11 @@ resource "aws_iam_role_policy" "lambda_pipeline_access" {
           "arn:${data.aws_partition.current.partition}:bedrock:*::foundation-model/*",
           "arn:${data.aws_partition.current.partition}:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:BatchGetItem", "dynamodb:PutItem"]
+        Resource = aws_dynamodb_table.query_cache.arn
       }
     ]
   })
@@ -129,6 +135,11 @@ resource "aws_iam_policy" "sfn_policy" {
         Effect = "Allow"
         Action = ["bedrock:StartIngestionJob", "bedrock:GetIngestionJob"]
         Resource = aws_bedrockagent_knowledge_base.rag.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:UpdateItem"]
+        Resource = aws_dynamodb_table.query_cache.arn
       },
       {
         Effect = "Allow"

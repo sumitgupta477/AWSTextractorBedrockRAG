@@ -1,3 +1,4 @@
+import hashlib
 import json
 import random
 import time
@@ -14,6 +15,14 @@ guardrail_version = os.environ.get('GUARDRAIL_VERSION', '')
 sample_bucket = os.environ.get('EVAL_SAMPLE_BUCKET', '')
 sample_rate = float(os.environ.get('EVAL_SAMPLE_RATE', '0') or 0)
 s3 = boto3.client('s3') if sample_bucket else None
+# Answer cache: repeated questions are served from DynamoDB instead of calling Bedrock again.
+cache_table = os.environ.get('CACHE_TABLE', '')
+cache_ttl_seconds = int(os.environ.get('CACHE_TTL_SECONDS', '0') or 0)
+cache_enabled = bool(cache_table) and cache_ttl_seconds > 0
+dynamodb = boto3.client('dynamodb') if cache_enabled else None
+# The ingestion pipeline bumps this item's counter whenever a document finishes indexing.
+KB_VERSION_KEY = '#kb_version'
+MAX_CACHE_ITEM_BYTES = 350_000  # DynamoDB items are limited to 400 KB
 
 def lambda_handler(event, context):
     started = time.perf_counter()
@@ -26,6 +35,20 @@ def lambda_handler(event, context):
         if not user_query:
             return respond(400, {'error': 'query parameter required'})
         
+        # Callers (such as the evals) can send "cache": false to force a fresh answer.
+        use_cache = cache_enabled and body.get('cache', True) is not False
+        key = cache_key(user_query) if use_cache else None
+        kb_version = None
+        if use_cache:
+            cached, kb_version = cache_lookup(key)
+            if cached:
+                log_event('query_succeeded', request_id, started,
+                          query_chars=len(user_query),
+                          answer_chars=len(cached['answer']),
+                          citations=len(cached['citations']),
+                          cache_hit=True)
+                return respond(200, {**cached, 'cached': True})
+
         # Call Bedrock RetrieveAndGenerate API
         kb_config = {
             'knowledgeBaseId': knowledge_base_id,
@@ -53,7 +76,12 @@ def lambda_handler(event, context):
                   answer_chars=len(response['output']['text']),
                   citations=len(citations),
                   guardrail_action=response.get('guardrailAction', 'NONE'),
-                  references=sum(len(c.get('retrievedReferences', [])) for c in citations))
+                  references=sum(len(c.get('retrievedReferences', [])) for c in citations),
+                  cache_hit=False)
+
+        # Blocked answers are not cached, so a guardrail change takes effect immediately.
+        if use_cache and kb_version is not None and response.get('guardrailAction', 'NONE') != 'INTERVENED':
+            cache_store(key, kb_version, response['output']['text'], citations)
 
         if sample_bucket and random.random() < sample_rate:
             save_eval_sample(request_id, user_query, response['output']['text'], citations,
@@ -61,7 +89,8 @@ def lambda_handler(event, context):
 
         return respond(200, {
             'answer': response['output']['text'],
-            'citations': citations
+            'citations': citations,
+            'cached': False
         })
     
     except json.JSONDecodeError:
@@ -70,6 +99,61 @@ def lambda_handler(event, context):
         # Log the details to CloudWatch, but don't expose internals to API callers.
         log_event('query_failed', request_id, started, error_type=type(e).__name__, error=repr(e))
         return respond(500, {'error': 'query failed'})
+
+def cache_key(question):
+    """Hash of the normalised question plus everything else that shapes the answer.
+
+    Only the hash is stored, never the question text.
+    """
+    normalised = ' '.join(question.lower().split())
+    parts = [knowledge_base_id, model_id, guardrail_id, guardrail_version, normalised]
+    return hashlib.sha256('\x1f'.join(parts).encode('utf-8')).hexdigest()
+
+def cache_lookup(key):
+    """Return (cached answer or None, current knowledge-base version or None).
+
+    An entry counts only if it has not expired and was written against the current
+    knowledge-base version. Cache failures are logged and treated as a miss; the
+    version is None in that case so nothing is written back either.
+    """
+    try:
+        result = dynamodb.batch_get_item(RequestItems={cache_table: {
+            'Keys': [{'cache_key': {'S': KB_VERSION_KEY}}, {'cache_key': {'S': key}}],
+            'ConsistentRead': True,
+        }})
+        if result.get('UnprocessedKeys'):
+            return None, None
+        items = {item['cache_key']['S']: item for item in result.get('Responses', {}).get(cache_table, [])}
+        kb_version = int(items.get(KB_VERSION_KEY, {}).get('version', {}).get('N', '0'))
+        entry = items.get(key)
+        if (entry
+                and int(entry['kb_version']['N']) == kb_version
+                and int(entry['expires_at']['N']) > time.time()):
+            return {'answer': entry['answer']['S'], 'citations': json.loads(entry['citations']['S'])}, kb_version
+        return None, kb_version
+    except Exception as e:
+        print(json.dumps({'event': 'cache_lookup_failed', 'error': repr(e)}))
+        return None, None
+
+def cache_store(key, kb_version, answer, citations):
+    """Save an answer, tagged with the knowledge-base version read before Bedrock was called.
+
+    If a document finished indexing while this request was running, the entry is
+    already out of date and will simply never be served.
+    """
+    try:
+        citations_json = json.dumps(citations, default=str)
+        if len(answer.encode('utf-8')) + len(citations_json.encode('utf-8')) > MAX_CACHE_ITEM_BYTES:
+            return
+        dynamodb.put_item(TableName=cache_table, Item={
+            'cache_key': {'S': key},
+            'kb_version': {'N': str(kb_version)},
+            'expires_at': {'N': str(int(time.time()) + cache_ttl_seconds)},
+            'answer': {'S': answer},
+            'citations': {'S': citations_json},
+        })
+    except Exception as e:
+        print(json.dumps({'event': 'cache_store_failed', 'error': repr(e)}))
 
 def save_eval_sample(request_id, question, answer, citations, guardrail_action, started):
     """Store one question/answer/passages record for the nightly LLM judge.
